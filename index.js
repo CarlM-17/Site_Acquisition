@@ -332,7 +332,7 @@ const HTML_PAGE = `<!DOCTYPE html>
   /* Site Proposal view */
   .proposal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
   .proposal-head h2 { margin: 0; font-size: 18px; }
-  .btn { border: none; padding: 9px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+  .btn { border: none; padding: 9px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; text-decoration: none; display: inline-block; font-family: inherit; }
   .btn-primary { background: var(--primary); color: #fff; }
   .btn-secondary { background: #fff; color: var(--text); border: 1px solid var(--border); }
   .btn-danger { background: #dc2626; color: #fff; }
@@ -436,6 +436,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     background: #111; border-radius: 8px; padding: 12px; max-width: 95vw;
     display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
   }
+  .image-viewer-actions { display: flex; gap: 8px; }
   .image-viewer img { max-width: 100%; max-height: 82vh; display: block; border-radius: 4px; }
   .card-map { border-top: 1px solid var(--border); }
   .card-map iframe { width: 100%; height: 340px; border: none; display: block; }
@@ -652,7 +653,10 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     <div class="overlay hidden" id="image-viewer-overlay">
       <div class="image-viewer">
-        <button type="button" class="btn btn-secondary btn-sm" id="image-viewer-close">Close</button>
+        <div class="image-viewer-actions">
+          <a class="btn btn-primary btn-sm" id="image-viewer-download" download="photo.jpg">Download</a>
+          <button type="button" class="btn btn-secondary btn-sm" id="image-viewer-close">Close</button>
+        </div>
         <img id="image-viewer-img" alt="Photo" />
       </div>
     </div>
@@ -667,6 +671,7 @@ const HTML_PAGE = `<!DOCTYPE html>
   var editingRow = null;
   var currentUser = null;
   var MAX_CELL_CHARS = 45000;
+  var LOT_PLAN_SLOT_CHARS = 24000;
 
   var loginWrap = document.getElementById('login-wrap');
   var appShell = document.getElementById('app-shell');
@@ -833,6 +838,16 @@ const HTML_PAGE = `<!DOCTYPE html>
   function openImageViewer(url) {
     if (!url) return;
     document.getElementById('image-viewer-img').src = url;
+    var ext = 'jpg';
+    if (url.indexOf('data:image/') === 0) {
+      var afterPrefix = url.slice(11);
+      var semiIdx = afterPrefix.indexOf(';');
+      var mime = semiIdx > -1 ? afterPrefix.slice(0, semiIdx) : afterPrefix;
+      if (mime) ext = mime === 'jpeg' ? 'jpg' : mime;
+    }
+    var downloadLink = document.getElementById('image-viewer-download');
+    downloadLink.href = url;
+    downloadLink.setAttribute('download', 'photo.' + ext);
     document.getElementById('image-viewer-overlay').classList.remove('hidden');
   }
   document.getElementById('image-viewer-close').addEventListener('click', function () {
@@ -925,11 +940,13 @@ const HTML_PAGE = `<!DOCTYPE html>
   function compressImageFile(file, maxChars) {
     var budget = maxChars || MAX_CELL_CHARS;
     var attempts = [
-      { maxDim: 900, quality: 0.7 },
+      { maxDim: 1280, quality: 0.82 },
+      { maxDim: 1000, quality: 0.72 },
+      { maxDim: 800, quality: 0.6 },
       { maxDim: 600, quality: 0.5 },
-      { maxDim: 400, quality: 0.35 },
-      { maxDim: 260, quality: 0.3 },
-      { maxDim: 180, quality: 0.25 },
+      { maxDim: 450, quality: 0.4 },
+      { maxDim: 320, quality: 0.32 },
+      { maxDim: 220, quality: 0.28 },
     ];
     return new Promise(function (resolve, reject) {
       var reader = new FileReader();
@@ -983,10 +1000,10 @@ const HTML_PAGE = `<!DOCTYPE html>
   }
   handleFileInput(document.getElementById('picture-camera'), 'picture-url', 'picture-preview', 'picture-hint', MAX_CELL_CHARS);
   handleFileInput(document.getElementById('picture-file'), 'picture-url', 'picture-preview', 'picture-hint', MAX_CELL_CHARS);
-  handleFileInput(document.getElementById('lotplan1-camera'), 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint', MAX_CELL_CHARS / 2);
-  handleFileInput(document.getElementById('lotplan1-file'), 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint', MAX_CELL_CHARS / 2);
-  handleFileInput(document.getElementById('lotplan2-camera'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint', MAX_CELL_CHARS / 2);
-  handleFileInput(document.getElementById('lotplan2-file'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint', MAX_CELL_CHARS / 2);
+  handleFileInput(document.getElementById('lotplan1-camera'), 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint', LOT_PLAN_SLOT_CHARS);
+  handleFileInput(document.getElementById('lotplan1-file'), 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint', LOT_PLAN_SLOT_CHARS);
+  handleFileInput(document.getElementById('lotplan2-camera'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint', LOT_PLAN_SLOT_CHARS);
+  handleFileInput(document.getElementById('lotplan2-file'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint', LOT_PLAN_SLOT_CHARS);
 
   function deleteRecord(row) {
     if (!confirm('Delete this site record? This cannot be undone.')) return;
