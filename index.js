@@ -334,7 +334,13 @@ const HTML_PAGE = `<!DOCTYPE html>
     .proposal-head { flex-wrap: wrap; gap: 10px; }
     .proposal-head h2 { font-size: 16px; }
     th, td { font-size: 12px; padding: 6px 8px; }
-    #panel-table td:nth-child(2), #panel-table th:nth-child(2) { width: 150px; min-width: 150px; }
+    /* Freeze panes get in the way on small screens - disable them so all data can scroll into view */
+    #panel-table th:nth-child(1), #panel-table td:nth-child(1),
+    #panel-table th:nth-child(2), #panel-table td:nth-child(2),
+    #panel-table th:last-child, #panel-table td:last-child {
+      position: static; left: auto; right: auto; box-shadow: none;
+      width: auto; min-width: 110px;
+    }
     .carousel-head { flex-wrap: wrap; gap: 10px; }
     .card-photo, .card-photo img { min-height: 220px; }
     .card-info { padding: 16px; }
