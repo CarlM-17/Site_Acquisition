@@ -323,6 +323,27 @@ const HTML_PAGE = `<!DOCTYPE html>
   .picture-hint { font-size: 11px; color: var(--muted); }
   .form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
   .form-error { color: #dc2626; font-size: 13px; margin-top: 10px; display: none; }
+
+  /* Mobile */
+  @media (max-width: 640px) {
+    header { padding: 12px 16px; }
+    header h1 { font-size: 17px; }
+    nav.tabs { padding: 0 12px; }
+    nav.tabs button { padding: 12px 10px; font-size: 13px; }
+    main { padding: 14px 12px; }
+    .proposal-head { flex-wrap: wrap; gap: 10px; }
+    .proposal-head h2 { font-size: 16px; }
+    th, td { font-size: 12px; padding: 6px 8px; }
+    #panel-table td:nth-child(2), #panel-table th:nth-child(2) { width: 150px; min-width: 150px; }
+    .carousel-head { flex-wrap: wrap; gap: 10px; }
+    .card-photo, .card-photo img { min-height: 220px; }
+    .card-info { padding: 16px; }
+    .info-grid { grid-template-columns: 1fr; }
+    .overlay { padding: 0; align-items: stretch; }
+    .modal { max-width: 100%; min-height: 100%; border-radius: 0; padding: 16px; }
+    .form-grid { grid-template-columns: 1fr; }
+    .form-item input, .form-item select, .form-item textarea { font-size: 16px; }
+  }
 </style>
 </head>
 <body>
