@@ -41,8 +41,14 @@ async function getSheetGid(sheets) {
     spreadsheetId: SHEET_ID,
     fields: 'sheets.properties',
   });
-  const sheet = (meta.data.sheets || []).find((s) => s.properties.title === SHEET_NAME);
-  if (!sheet) throw new Error('Sheet tab "' + SHEET_NAME + '" not found');
+  const allSheets = meta.data.sheets || [];
+  const target = SHEET_NAME.trim().toLowerCase();
+  const sheet = allSheets.find((s) => s.properties.title === SHEET_NAME)
+    || allSheets.find((s) => s.properties.title.trim().toLowerCase() === target);
+  if (!sheet) {
+    const available = allSheets.map((s) => s.properties.title).join(', ');
+    throw new Error('Sheet tab "' + SHEET_NAME + '" not found. Available tabs: ' + available);
+  }
   cachedSheetGid = sheet.properties.sheetId;
   return cachedSheetGid;
 }
