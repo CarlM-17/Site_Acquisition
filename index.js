@@ -16,9 +16,9 @@ const PRIVATE_KEY = (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n')
 const COLUMNS = [
   'No', 'Address', 'Google Map Link', 'Picture', 'Size', 'Rate',
   'Lease Term', 'Lease Type', 'Frontage', 'Store Format', 'Nearest PG',
-  'Competitors', 'Visited', 'Lot Plan', 'Status', 'Remarks'
+  'Competitors', 'Visited', 'Lot Plan', 'Status', 'Remarks', 'Update from Mike'
 ];
-const LAST_COL = 'P';
+const LAST_COL = 'Q';
 const ADMIN_ONLY_FIELDS = ['Visited', 'Status'];
 
 let cachedSheetGid = null;
@@ -414,6 +414,17 @@ const HTML_PAGE = `<!DOCTYPE html>
     font-size: 13px;
   }
   .map-link.disabled { background: #a3a3a3; pointer-events: none; }
+  .lotplan-btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+  .lotplan-btn {
+    display: inline-block;
+    padding: 8px 14px;
+    background: #fff;
+    color: var(--primary);
+    border: 1px solid var(--primary);
+    text-decoration: none;
+    border-radius: 6px;
+    font-size: 13px;
+  }
   .card-map { border-top: 1px solid var(--border); }
   .card-map iframe { width: 100%; height: 340px; border: none; display: block; }
   .card-map .no-map { padding: 20px 24px; color: var(--muted); font-size: 14px; }
@@ -607,10 +618,16 @@ const HTML_PAGE = `<!DOCTYPE html>
             </div>
             <div class="form-item full">
               <label>Status</label>
-              <input name="Status" type="text" />
+              <select name="Status">
+                <option value="">-</option>
+                <option value="Approved">Approved</option>
+                <option value="Disapproved">Disapproved</option>
+                <option value="Pending">Pending</option>
+              </select>
               <div class="lock-hint" id="status-lock-hint"></div>
             </div>
             <div class="form-item full"><label>Remarks</label><textarea name="Remarks"></textarea></div>
+            <div class="form-item full"><label>Update from Mike</label><textarea name="Update from Mike"></textarea></div>
           </div>
           <div class="form-error" id="form-error"></div>
           <div class="form-actions">
@@ -624,7 +641,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
 <script>
 (function () {
-  var COLUMNS = ['No','Address','Google Map Link','Picture','Size','Rate','Lease Term','Lease Type','Frontage','Store Format','Nearest PG','Competitors','Visited','Lot Plan','Status','Remarks'];
+  var COLUMNS = ['No','Address','Google Map Link','Picture','Size','Rate','Lease Term','Lease Type','Frontage','Store Format','Nearest PG','Competitors','Visited','Lot Plan','Status','Remarks','Update from Mike'];
   var ADMIN_ONLY_FIELDS = ['Visited', 'Status'];
   var data = [];
   var currentIndex = 0;
@@ -1043,7 +1060,8 @@ const HTML_PAGE = `<!DOCTYPE html>
       return '<div class="info-item"><label>' + escapeHtml(f) + '</label><div class="val">' + (escapeHtml(rec[f]) || '&mdash;') + '</div></div>';
     }).join('') + '<div class="info-item"><label>Visited</label><div class="val">' + (visitedBadge || '&mdash;') + '</div></div>';
 
-    var remarksHtml = '<div class="info-item full"><label>Remarks</label><div class="val">' + (escapeHtml(rec['Remarks']) || '&mdash;') + '</div></div>';
+    var remarksHtml = '<div class="info-item full"><label>Remarks</label><div class="val">' + (escapeHtml(rec['Remarks']) || '&mdash;') + '</div></div>' +
+      '<div class="info-item full"><label>Update from Mike</label><div class="val">' + (escapeHtml(rec['Update from Mike']) || '&mdash;') + '</div></div>';
 
     var mapSrc = mapEmbedSrc(rec);
     var mapHtml = mapSrc
@@ -1052,6 +1070,13 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     var mapLinkHref = rec['Google Map Link'] || (rec['Address'] ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(rec['Address']) : '');
 
+    var lotPlanUrls = (rec['Lot Plan'] || '').split('\\n').filter(Boolean).slice(0, 2);
+    var lotPlanBtnsHtml = lotPlanUrls.length
+      ? '<div class="lotplan-btns">' + lotPlanUrls.map(function (u, i) {
+          return '<a class="lotplan-btn" href="' + escapeHtml(u) + '" target="_blank" rel="noopener">View Lot Plan ' + (i + 1) + '</a>';
+        }).join('') + '</div>'
+      : '';
+
     cardEl.innerHTML =
       '<div class="card-top">' +
         '<div class="card-photo">' + photoHtml + noPhotoFallback + '</div>' +
@@ -1059,6 +1084,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           '<h3>' + escapeHtml(rec['Address'] || 'No address') + '</h3>' +
           '<div class="address">No. ' + escapeHtml(rec['No']) + '</div>' +
           '<div class="info-grid">' + infoItemsHtml + remarksHtml + '</div>' +
+          lotPlanBtnsHtml +
           '<a class="map-link' + (mapLinkHref ? '' : ' disabled') + '" href="' + escapeHtml(mapLinkHref) + '" target="_blank" rel="noopener">Open in Google Maps</a>' +
         '</div>' +
       '</div>' +
