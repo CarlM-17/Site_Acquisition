@@ -218,8 +218,28 @@ const HTML_PAGE = `<!DOCTYPE html>
   .table-wrap { overflow-x: auto; background: #fff; border: 1px solid var(--border); border-radius: 8px; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; }
   th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
-  th { background: var(--primary-light); color: var(--primary); position: sticky; top: 0; }
+  th { background: var(--primary-light); color: var(--primary); position: sticky; top: 0; z-index: 2; }
   tr:hover td { background: #fafafa; }
+
+  /* Freeze panes: No + Address columns on the left, Actions column on the right */
+  #panel-table th:nth-child(1), #panel-table td:nth-child(1) {
+    position: sticky; left: 0; width: 56px; min-width: 56px; text-align: center;
+    background: #fff; z-index: 1;
+  }
+  #panel-table th:nth-child(2), #panel-table td:nth-child(2) {
+    position: sticky; left: 56px; width: 220px; min-width: 220px; white-space: normal;
+    background: #fff; z-index: 1; box-shadow: 2px 0 4px rgba(0,0,0,0.06);
+  }
+  #panel-table th:nth-child(1), #panel-table th:nth-child(2) {
+    background: var(--primary-light); z-index: 3;
+  }
+  #panel-table tr:hover td:nth-child(1), #panel-table tr:hover td:nth-child(2) { background: #fafafa; }
+  #panel-table th:last-child, #panel-table td:last-child {
+    position: sticky; right: 0; background: #fff; z-index: 1;
+    box-shadow: -2px 0 4px rgba(0,0,0,0.06);
+  }
+  #panel-table th:last-child { background: var(--primary-light); z-index: 3; }
+  #panel-table tr:hover td:last-child { background: #fafafa; }
   .badge { padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }
   .badge-yes { background: #dcfce7; color: #166534; }
   .badge-no { background: #fee2e2; color: #991b1b; }
