@@ -1,4 +1,5 @@
 const express = require('express');
+const crypto = require('crypto');
 const { google } = require('googleapis');
 
 const app = express();
@@ -8,16 +9,20 @@ const PORT = process.env.PORT || 3000;
 
 const SHEET_ID = process.env.SHEET_ID || '1wkP2CQZhzxeLNHDeQYdzGZwYHkfK-D1_qgBAVsO91qE';
 const SHEET_NAME = process.env.SHEET_NAME || 'site';
+const USER_SHEET_NAME = process.env.USER_SHEET_NAME || 'User';
 const CLIENT_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
 const PRIVATE_KEY = (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
 
 const COLUMNS = [
   'No', 'Address', 'Google Map Link', 'Picture', 'Size', 'Rate',
   'Lease Term', 'Lease Type', 'Frontage', 'Store Format', 'Nearest PG',
-  'Competitors', 'Visited', 'Status', 'Remarks'
+  'Competitors', 'Visited', 'Lot Plan', 'Status', 'Remarks'
 ];
+const LAST_COL = 'P';
+const ADMIN_ONLY_FIELDS = ['Visited', 'Status'];
 
 let cachedSheetGid = null;
+const sessions = new Map();
 
 function getSheetsClient() {
   if (!CLIENT_EMAIL || !PRIVATE_KEY) {
@@ -56,15 +61,76 @@ function driveDirectUrl(url) {
 }
 
 function recordToRow(rec) {
-  return COLUMNS.map((c) => (rec[c] !== undefined && rec[c] !== null ? String(rec[c]) : ''));
+  return COLUMNS.map((c) => {
+    if (c === 'Picture' || c === 'Lot Plan') return rec[c] !== undefined && rec[c] !== null ? String(rec[c]) : '';
+    return rec[c] !== undefined && rec[c] !== null ? String(rec[c]) : '';
+  });
 }
 
-app.get('/api/data', async (req, res) => {
+function getSessionFromReq(req) {
+  const cookieHeader = req.headers.cookie || '';
+  const match = cookieHeader.match(/(?:^|;\s*)sid=([^;]+)/);
+  if (!match) return null;
+  return sessions.get(match[1]) || null;
+}
+
+function requireAuth(req, res, next) {
+  const session = getSessionFromReq(req);
+  if (!session) return res.status(401).json({ error: 'Not authenticated' });
+  req.session = session;
+  next();
+}
+
+function setSessionCookie(res, token) {
+  const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  res.setHeader('Set-Cookie', 'sid=' + token + '; HttpOnly; Path=/; SameSite=Lax; Max-Age=43200' + secureFlag);
+}
+
+app.post('/api/login', async (req, res) => {
+  try {
+    const userId = ((req.body && req.body.userId) || '').toString().trim();
+    const password = ((req.body && req.body.password) || '').toString();
+    if (!userId || !password) return res.status(400).json({ error: 'User ID and password are required' });
+
+    const sheets = getSheetsClient();
+    const result = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: USER_SHEET_NAME + '!A2:D',
+    });
+    const rows = result.data.values || [];
+    const match = rows.find((r) => (r[1] || '').toString().trim() === userId && (r[2] || '').toString() === password);
+    if (!match) return res.status(401).json({ error: 'Invalid User ID or Password' });
+
+    const userName = (match[0] || '').toString();
+    const level = (match[3] || '').toString().trim().toLowerCase();
+    const token = crypto.randomBytes(24).toString('hex');
+    sessions.set(token, { userName: userName, userId: userId, level: level });
+    setSessionCookie(res, token);
+    res.json({ success: true, userName: userName, level: level });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/logout', (req, res) => {
+  const cookieHeader = req.headers.cookie || '';
+  const match = cookieHeader.match(/(?:^|;\s*)sid=([^;]+)/);
+  if (match) sessions.delete(match[1]);
+  res.setHeader('Set-Cookie', 'sid=; HttpOnly; Path=/; Max-Age=0');
+  res.json({ success: true });
+});
+
+app.get('/api/me', requireAuth, (req, res) => {
+  res.json({ userName: req.session.userName, level: req.session.level });
+});
+
+app.get('/api/data', requireAuth, async (req, res) => {
   try {
     const sheets = getSheetsClient();
     const result = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
-      range: SHEET_NAME + '!A2:O',
+      range: SHEET_NAME + '!A2:' + LAST_COL,
     });
     const rows = result.data.values || [];
     const records = rows
@@ -75,6 +141,11 @@ app.get('/api/data', async (req, res) => {
           rec[col] = (r[i] || '').toString();
         });
         rec.Picture = driveDirectUrl(rec.Picture);
+        rec['Lot Plan'] = rec['Lot Plan']
+          .split('\n')
+          .map((u) => driveDirectUrl(u.trim()))
+          .filter(Boolean)
+          .join('\n');
         rec._row = idx + 2;
         return rec;
       });
@@ -85,15 +156,19 @@ app.get('/api/data', async (req, res) => {
   }
 });
 
-app.post('/api/data', async (req, res) => {
+app.post('/api/data', requireAuth, async (req, res) => {
   try {
     const sheets = getSheetsClient();
+    const record = Object.assign({}, req.body || {});
+    if (req.session.level !== 'admin') {
+      ADMIN_ONLY_FIELDS.forEach((f) => { record[f] = ''; });
+    }
     const result = await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
-      range: SHEET_NAME + '!A:O',
+      range: SHEET_NAME + '!A:' + LAST_COL,
       valueInputOption: 'USER_ENTERED',
       insertDataOption: 'INSERT_ROWS',
-      requestBody: { values: [recordToRow(req.body || {})] },
+      requestBody: { values: [recordToRow(record)] },
     });
     const updatedRange = result.data.updates && result.data.updates.updatedRange;
     const m = updatedRange && updatedRange.match(/![A-Z]+(\d+)/);
@@ -104,16 +179,29 @@ app.post('/api/data', async (req, res) => {
   }
 });
 
-app.put('/api/data/:row', async (req, res) => {
+app.put('/api/data/:row', requireAuth, async (req, res) => {
   try {
     const rowNum = parseInt(req.params.row, 10);
     if (!rowNum || rowNum < 2) return res.status(400).json({ error: 'Invalid row' });
     const sheets = getSheetsClient();
+    const record = Object.assign({}, req.body || {});
+
+    if (req.session.level !== 'admin') {
+      const existing = await sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID,
+        range: SHEET_NAME + '!A' + rowNum + ':' + LAST_COL + rowNum,
+      });
+      const existingRow = (existing.data.values && existing.data.values[0]) || [];
+      const existingRec = {};
+      COLUMNS.forEach((c, i) => { existingRec[c] = existingRow[i] || ''; });
+      ADMIN_ONLY_FIELDS.forEach((f) => { record[f] = existingRec[f]; });
+    }
+
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_ID,
-      range: SHEET_NAME + '!A' + rowNum + ':O' + rowNum,
+      range: SHEET_NAME + '!A' + rowNum + ':' + LAST_COL + rowNum,
       valueInputOption: 'USER_ENTERED',
-      requestBody: { values: [recordToRow(req.body || {})] },
+      requestBody: { values: [recordToRow(record)] },
     });
     res.json({ success: true });
   } catch (err) {
@@ -122,7 +210,7 @@ app.put('/api/data/:row', async (req, res) => {
   }
 });
 
-app.delete('/api/data/:row', async (req, res) => {
+app.delete('/api/data/:row', requireAuth, async (req, res) => {
   try {
     const rowNum = parseInt(req.params.row, 10);
     if (!rowNum || rowNum < 2) return res.status(400).json({ error: 'Invalid row' });
@@ -180,9 +268,19 @@ const HTML_PAGE = `<!DOCTYPE html>
     background: var(--primary);
     color: #fff;
     padding: 16px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
   }
-  header h1 { margin: 0; font-size: 20px; }
-  header p { margin: 4px 0 0; font-size: 13px; opacity: 0.85; }
+  header .title h1 { margin: 0; font-size: 20px; }
+  header .title p { margin: 4px 0 0; font-size: 13px; opacity: 0.85; }
+  .user-badge { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .user-badge .btn-logout {
+    background: rgba(255,255,255,0.15); color: #fff; border: 1px solid rgba(255,255,255,0.4);
+    padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  }
   nav.tabs {
     display: flex;
     background: #fff;
@@ -206,6 +304,30 @@ const HTML_PAGE = `<!DOCTYPE html>
   main { padding: 20px 24px; max-width: 1200px; margin: 0 auto; }
   .panel { display: none; }
   .panel.active { display: block; }
+  #app-shell.hidden { display: none; }
+
+  /* Login */
+  .login-wrap {
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    padding: 20px; background: var(--bg);
+  }
+  .login-wrap.hidden { display: none; }
+  .login-card {
+    background: #fff; border-radius: 10px; padding: 30px; width: 100%; max-width: 360px;
+    border: 1px solid var(--border);
+  }
+  .login-card h2 { margin: 0 0 4px; color: var(--primary); }
+  .login-card p.subtitle { margin: 0 0 20px; color: var(--muted); font-size: 13px; }
+  .login-card label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
+  .login-card input {
+    width: 100%; padding: 9px 10px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 15px; margin-bottom: 14px; font-family: inherit;
+  }
+  .login-card button {
+    width: 100%; padding: 10px; background: var(--primary); color: #fff; border: none;
+    border-radius: 6px; font-size: 14px; cursor: pointer;
+  }
+  .login-error { color: #dc2626; font-size: 13px; margin-bottom: 12px; display: none; }
 
   /* Site Proposal view */
   .proposal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
@@ -220,6 +342,11 @@ const HTML_PAGE = `<!DOCTYPE html>
   th, td { padding: 8px 10px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
   th { background: var(--primary-light); color: var(--primary); position: sticky; top: 0; z-index: 2; }
   tr:hover td { background: #fafafa; }
+  .badge { padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+  .badge-yes { background: #dcfce7; color: #166534; }
+  .badge-no { background: #fee2e2; color: #991b1b; }
+  .row-actions { display: flex; gap: 6px; }
+  .lock-hint { font-size: 11px; color: var(--muted); font-style: italic; margin-top: 2px; }
 
   /* Freeze panes: No + Address columns on the left, Actions column on the right */
   #panel-table th:nth-child(1), #panel-table td:nth-child(1) {
@@ -240,10 +367,6 @@ const HTML_PAGE = `<!DOCTYPE html>
   }
   #panel-table th:last-child { background: var(--primary-light); z-index: 3; }
   #panel-table tr:hover td:last-child { background: #fafafa; }
-  .badge { padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 600; }
-  .badge-yes { background: #dcfce7; color: #166534; }
-  .badge-no { background: #fee2e2; color: #991b1b; }
-  .row-actions { display: flex; gap: 6px; }
 
   /* Carousel view */
   .carousel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
@@ -303,7 +426,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     padding: 30px 16px; overflow-y: auto; z-index: 50;
   }
   .overlay.hidden { display: none; }
-  .modal { background: #fff; border-radius: 10px; width: 100%; max-width: 640px; padding: 24px; }
+  .modal { background: #fff; border-radius: 10px; width: 100%; max-width: 640px; padding: 24px; margin-bottom: 30px; }
   .modal h3 { margin: 0 0 16px; color: var(--primary); }
   .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 16px; }
   .form-item { display: flex; flex-direction: column; gap: 4px; }
@@ -312,22 +435,28 @@ const HTML_PAGE = `<!DOCTYPE html>
   .form-item input, .form-item select, .form-item textarea {
     padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 14px; font-family: inherit;
   }
+  .form-item input:disabled, .form-item select:disabled {
+    background: #f3f4f6; color: var(--muted); cursor: not-allowed;
+  }
   .form-item textarea { resize: vertical; min-height: 60px; }
   .picture-input { display: flex; flex-direction: column; gap: 8px; }
-  .picture-preview { max-width: 100%; max-height: 160px; border-radius: 6px; border: 1px solid var(--border); display: none; }
+  .picture-slot { border: 1px dashed var(--border); border-radius: 8px; padding: 10px; }
+  .picture-slot + .picture-slot { margin-top: 10px; }
+  .picture-slot-label { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+  .picture-preview { max-width: 100%; max-height: 160px; border-radius: 6px; border: 1px solid var(--border); display: none; margin-bottom: 8px; }
   .picture-btns { display: flex; gap: 8px; flex-wrap: wrap; }
   .file-btn {
     display: inline-block; padding: 7px 12px; border: 1px solid var(--border); border-radius: 6px;
     background: #fff; font-size: 12px; cursor: pointer; color: var(--text);
   }
-  .picture-hint { font-size: 11px; color: var(--muted); }
+  .picture-hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
   .form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
   .form-error { color: #dc2626; font-size: 13px; margin-top: 10px; display: none; }
 
   /* Mobile */
   @media (max-width: 640px) {
     header { padding: 12px 16px; }
-    header h1 { font-size: 17px; }
+    header .title h1 { font-size: 17px; }
     nav.tabs { padding: 0 12px; }
     nav.tabs button { padding: 12px 10px; font-size: 13px; }
     main { padding: 14px 12px; }
@@ -345,106 +474,217 @@ const HTML_PAGE = `<!DOCTYPE html>
     .card-photo, .card-photo img { min-height: 220px; }
     .card-info { padding: 16px; }
     .info-grid { grid-template-columns: 1fr; }
-    .overlay { padding: 0; align-items: stretch; }
-    .modal { max-width: 100%; min-height: 100%; border-radius: 0; padding: 16px; }
+    .overlay { padding: 0; align-items: flex-start; background: #fff; }
+    .modal { max-width: 100%; min-height: 100vh; border-radius: 0; padding: 16px; margin-bottom: 0; }
     .form-grid { grid-template-columns: 1fr; }
     .form-item input, .form-item select, .form-item textarea { font-size: 16px; }
   }
 </style>
 </head>
 <body>
-  <header>
-    <h1>CaMaNaVa Site Acquisition</h1>
-    <p>Site acquisition monitoring</p>
-  </header>
-  <nav class="tabs">
-    <button id="tab-btn-table" class="active">Site Proposal</button>
-    <button id="tab-btn-carousel">Carousel View</button>
-  </nav>
-  <main>
-    <section id="panel-table" class="panel active">
-      <div class="proposal-head">
-        <h2>Site Proposal</h2>
-        <button class="btn btn-primary" id="btn-add-site">+ Add New Site</button>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr id="table-head"></tr></thead>
-          <tbody id="table-body"><tr><td class="status-msg">Loading...</td></tr></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section id="panel-carousel" class="panel">
-      <div class="carousel-head">
-        <h2 id="carousel-title">Site</h2>
-        <div class="nav-btns">
-          <button id="btn-prev">&#8592; Prev</button>
-          <span class="counter" id="carousel-counter">0 / 0</span>
-          <button id="btn-next">Next &#8594;</button>
-        </div>
-      </div>
-      <div class="card" id="carousel-card">
-        <div class="status-msg">Loading...</div>
-      </div>
-    </section>
-  </main>
-
-  <div class="overlay hidden" id="form-overlay">
-    <div class="modal">
-      <h3 id="form-title">Add Site</h3>
-      <form id="site-form">
-        <div class="form-grid">
-          <div class="form-item"><label>No</label><input name="No" type="text" /></div>
-          <div class="form-item">
-            <label>Visited</label>
-            <select name="Visited">
-              <option value="">-</option>
-              <option value="Yes">Yes</option>
-              <option value="No">No</option>
-            </select>
-          </div>
-          <div class="form-item full"><label>Address</label><input name="Address" type="text" /></div>
-          <div class="form-item full"><label>Google Map Link</label><input name="Google Map Link" type="text" placeholder="Paste Google Maps link" /></div>
-          <div class="form-item full">
-            <label>Picture</label>
-            <div class="picture-input">
-              <img class="picture-preview" id="picture-preview" />
-              <input name="Picture" id="picture-url" type="text" placeholder="Paste an image URL, or use a button below" />
-              <div class="picture-btns">
-                <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="picture-camera" hidden /></label>
-                <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="picture-file" hidden /></label>
-              </div>
-              <div class="picture-hint" id="picture-hint"></div>
-            </div>
-          </div>
-          <div class="form-item"><label>Size</label><input name="Size" type="text" /></div>
-          <div class="form-item"><label>Rate</label><input name="Rate" type="text" /></div>
-          <div class="form-item"><label>Lease Term</label><input name="Lease Term" type="text" /></div>
-          <div class="form-item"><label>Lease Type</label><input name="Lease Type" type="text" /></div>
-          <div class="form-item"><label>Frontage</label><input name="Frontage" type="text" /></div>
-          <div class="form-item"><label>Store Format</label><input name="Store Format" type="text" /></div>
-          <div class="form-item"><label>Nearest PG</label><input name="Nearest PG" type="text" /></div>
-          <div class="form-item"><label>Competitors</label><input name="Competitors" type="text" /></div>
-          <div class="form-item full"><label>Status</label><input name="Status" type="text" /></div>
-          <div class="form-item full"><label>Remarks</label><textarea name="Remarks"></textarea></div>
-        </div>
-        <div class="form-error" id="form-error"></div>
-        <div class="form-actions">
-          <button type="button" class="btn btn-secondary" id="form-cancel">Cancel</button>
-          <button type="submit" class="btn btn-primary" id="form-save">Save</button>
-        </div>
+  <div class="login-wrap" id="login-wrap">
+    <div class="login-card">
+      <h2>CaMaNaVa Site Acquisition</h2>
+      <p class="subtitle">Sign in to continue</p>
+      <form id="login-form">
+        <label>User ID</label>
+        <input type="text" id="login-userid" autocomplete="username" required />
+        <label>Password</label>
+        <input type="password" id="login-password" autocomplete="current-password" required />
+        <div class="login-error" id="login-error"></div>
+        <button type="submit" id="login-submit">Log In</button>
       </form>
+    </div>
+  </div>
+
+  <div id="app-shell" class="hidden">
+    <header>
+      <div class="title">
+        <h1>CaMaNaVa Site Acquisition</h1>
+        <p>Site acquisition monitoring</p>
+      </div>
+      <div class="user-badge">
+        <span id="user-badge-text"></span>
+        <button class="btn-logout" id="btn-logout">Log Out</button>
+      </div>
+    </header>
+    <nav class="tabs">
+      <button id="tab-btn-table" class="active">Site Proposal</button>
+      <button id="tab-btn-carousel">Carousel View</button>
+    </nav>
+    <main>
+      <section id="panel-table" class="panel active">
+        <div class="proposal-head">
+          <h2>Site Proposal</h2>
+          <button class="btn btn-primary" id="btn-add-site">+ Add New Site</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr id="table-head"></tr></thead>
+            <tbody id="table-body"><tr><td class="status-msg">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="panel-carousel" class="panel">
+        <div class="carousel-head">
+          <h2 id="carousel-title">Site</h2>
+          <div class="nav-btns">
+            <button id="btn-prev">&#8592; Prev</button>
+            <span class="counter" id="carousel-counter">0 / 0</span>
+            <button id="btn-next">Next &#8594;</button>
+          </div>
+        </div>
+        <div class="card" id="carousel-card">
+          <div class="status-msg">Loading...</div>
+        </div>
+      </section>
+    </main>
+
+    <div class="overlay hidden" id="form-overlay">
+      <div class="modal">
+        <h3 id="form-title">Add Site</h3>
+        <form id="site-form">
+          <div class="form-grid">
+            <div class="form-item"><label>No</label><input name="No" type="text" /></div>
+            <div class="form-item">
+              <label>Visited</label>
+              <select name="Visited">
+                <option value="">-</option>
+                <option value="Yes">Yes</option>
+                <option value="No">No</option>
+              </select>
+              <div class="lock-hint" id="visited-lock-hint"></div>
+            </div>
+            <div class="form-item full"><label>Address</label><input name="Address" type="text" /></div>
+            <div class="form-item full"><label>Google Map Link</label><input name="Google Map Link" type="text" placeholder="Paste Google Maps link" /></div>
+            <div class="form-item full">
+              <label>Picture</label>
+              <div class="picture-input">
+                <img class="picture-preview" id="picture-preview" />
+                <input name="Picture" id="picture-url" type="text" placeholder="Paste an image URL, or use a button below" />
+                <div class="picture-btns">
+                  <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="picture-camera" hidden /></label>
+                  <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="picture-file" hidden /></label>
+                </div>
+                <div class="picture-hint" id="picture-hint"></div>
+              </div>
+            </div>
+            <div class="form-item"><label>Size</label><input name="Size" type="text" /></div>
+            <div class="form-item"><label>Rate</label><input name="Rate" type="text" /></div>
+            <div class="form-item"><label>Lease Term</label><input name="Lease Term" type="text" /></div>
+            <div class="form-item"><label>Lease Type</label><input name="Lease Type" type="text" /></div>
+            <div class="form-item"><label>Frontage</label><input name="Frontage" type="text" /></div>
+            <div class="form-item"><label>Store Format</label><input name="Store Format" type="text" /></div>
+            <div class="form-item"><label>Nearest PG</label><input name="Nearest PG" type="text" /></div>
+            <div class="form-item"><label>Competitors</label><input name="Competitors" type="text" /></div>
+            <div class="form-item full">
+              <label>Lot Plan (up to 2 photos)</label>
+              <div class="picture-slot">
+                <div class="picture-slot-label">Photo 1</div>
+                <div class="picture-input">
+                  <img class="picture-preview" id="lotplan1-preview" />
+                  <input id="lotplan1-url" type="text" placeholder="Paste an image URL, or use a button below" />
+                  <div class="picture-btns">
+                    <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="lotplan1-camera" hidden /></label>
+                    <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="lotplan1-file" hidden /></label>
+                  </div>
+                  <div class="picture-hint" id="lotplan1-hint"></div>
+                </div>
+              </div>
+              <div class="picture-slot">
+                <div class="picture-slot-label">Photo 2</div>
+                <div class="picture-input">
+                  <img class="picture-preview" id="lotplan2-preview" />
+                  <input id="lotplan2-url" type="text" placeholder="Paste an image URL, or use a button below" />
+                  <div class="picture-btns">
+                    <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="lotplan2-camera" hidden /></label>
+                    <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="lotplan2-file" hidden /></label>
+                  </div>
+                  <div class="picture-hint" id="lotplan2-hint"></div>
+                </div>
+              </div>
+            </div>
+            <div class="form-item full">
+              <label>Status</label>
+              <input name="Status" type="text" />
+              <div class="lock-hint" id="status-lock-hint"></div>
+            </div>
+            <div class="form-item full"><label>Remarks</label><textarea name="Remarks"></textarea></div>
+          </div>
+          <div class="form-error" id="form-error"></div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-secondary" id="form-cancel">Cancel</button>
+            <button type="submit" class="btn btn-primary" id="form-save">Save</button>
+          </div>
+        </form>
+      </div>
     </div>
   </div>
 
 <script>
 (function () {
-  var COLUMNS = ['No','Address','Google Map Link','Picture','Size','Rate','Lease Term','Lease Type','Frontage','Store Format','Nearest PG','Competitors','Visited','Status','Remarks'];
+  var COLUMNS = ['No','Address','Google Map Link','Picture','Size','Rate','Lease Term','Lease Type','Frontage','Store Format','Nearest PG','Competitors','Visited','Lot Plan','Status','Remarks'];
+  var ADMIN_ONLY_FIELDS = ['Visited', 'Status'];
   var data = [];
   var currentIndex = 0;
   var editingRow = null;
+  var currentUser = null;
   var MAX_CELL_CHARS = 45000;
+
+  var loginWrap = document.getElementById('login-wrap');
+  var appShell = document.getElementById('app-shell');
+
+  function isAdmin() {
+    return !!currentUser && currentUser.level === 'admin';
+  }
+
+  function showApp(user) {
+    currentUser = user;
+    loginWrap.classList.add('hidden');
+    appShell.classList.remove('hidden');
+    document.getElementById('user-badge-text').textContent = user.userName + ' (' + (user.level || 'user') + ')';
+    loadData();
+  }
+
+  function showLogin() {
+    currentUser = null;
+    appShell.classList.add('hidden');
+    loginWrap.classList.remove('hidden');
+  }
+
+  document.getElementById('login-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var userId = document.getElementById('login-userid').value.trim();
+    var password = document.getElementById('login-password').value;
+    var errorEl = document.getElementById('login-error');
+    var submitBtn = document.getElementById('login-submit');
+    errorEl.style.display = 'none';
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Signing in...';
+    fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: userId, password: password }),
+    })
+      .then(function (r) {
+        if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || 'Login failed'); });
+        return r.json();
+      })
+      .then(function (user) { showApp(user); })
+      .catch(function (err) {
+        errorEl.textContent = err.message;
+        errorEl.style.display = 'block';
+      })
+      .finally(function () {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Log In';
+      });
+  });
+
+  document.getElementById('btn-logout').addEventListener('click', function () {
+    fetch('/api/logout', { method: 'POST' }).finally(function () { showLogin(); });
+  });
 
   var tabBtnTable = document.getElementById('tab-btn-table');
   var tabBtnCarousel = document.getElementById('tab-btn-carousel');
@@ -471,6 +711,7 @@ const HTML_PAGE = `<!DOCTYPE html>
   function loadData() {
     return fetch('/api/data')
       .then(function (r) {
+        if (r.status === 401) { showLogin(); throw new Error('Session expired'); }
         if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || 'Request failed'); });
         return r.json();
       })
@@ -514,6 +755,12 @@ const HTML_PAGE = `<!DOCTYPE html>
         }
         if (col === 'Picture') {
           return '<td>' + (rec[col] ? '<a href="' + escapeHtml(rec[col]) + '" target="_blank" rel="noopener">photo</a>' : '') + '</td>';
+        }
+        if (col === 'Lot Plan') {
+          var lp = (rec[col] || '').split('\\n').filter(Boolean);
+          return '<td>' + lp.map(function (u, i) {
+            return '<a href="' + escapeHtml(u) + '" target="_blank" rel="noopener">photo ' + (i + 1) + '</a>';
+          }).join(' ') + '</td>';
         }
         if (col === 'Google Map Link') {
           return '<td>' + (rec[col] ? '<a href="' + escapeHtml(rec[col]) + '" target="_blank" rel="noopener">map</a>' : '') + '</td>';
@@ -564,7 +811,28 @@ const HTML_PAGE = `<!DOCTYPE html>
       if (input) input.value = rec ? (rec[col] || '') : '';
     });
     if (!rec) form.elements['No'].value = nextNo();
-    updatePicturePreview(rec ? rec['Picture'] : '');
+
+    var admin = isAdmin();
+    ADMIN_ONLY_FIELDS.forEach(function (f) {
+      var input = form.elements[f];
+      if (input) input.disabled = !admin;
+    });
+    var lockMsg = admin ? '' : 'Admin only';
+    document.getElementById('visited-lock-hint').textContent = lockMsg;
+    document.getElementById('status-lock-hint').textContent = lockMsg;
+
+    updatePicturePreview('picture-preview', rec ? rec['Picture'] : '');
+    document.getElementById('picture-url').value = rec ? (rec['Picture'] || '') : '';
+    document.getElementById('picture-hint').textContent = '';
+
+    var lotPlanParts = rec ? (rec['Lot Plan'] || '').split('\\n').filter(Boolean) : [];
+    document.getElementById('lotplan1-url').value = lotPlanParts[0] || '';
+    document.getElementById('lotplan2-url').value = lotPlanParts[1] || '';
+    updatePicturePreview('lotplan1-preview', lotPlanParts[0] || '');
+    updatePicturePreview('lotplan2-preview', lotPlanParts[1] || '');
+    document.getElementById('lotplan1-hint').textContent = '';
+    document.getElementById('lotplan2-hint').textContent = '';
+
     document.getElementById('form-overlay').classList.remove('hidden');
   }
 
@@ -574,8 +842,8 @@ const HTML_PAGE = `<!DOCTYPE html>
 
   document.getElementById('form-cancel').addEventListener('click', closeForm);
 
-  function updatePicturePreview(url) {
-    var img = document.getElementById('picture-preview');
+  function updatePicturePreview(imgId, url) {
+    var img = document.getElementById(imgId);
     if (url) {
       img.src = url;
       img.style.display = 'block';
@@ -586,15 +854,23 @@ const HTML_PAGE = `<!DOCTYPE html>
   }
 
   document.getElementById('picture-url').addEventListener('input', function (e) {
-    updatePicturePreview(e.target.value);
+    updatePicturePreview('picture-preview', e.target.value);
+  });
+  document.getElementById('lotplan1-url').addEventListener('input', function (e) {
+    updatePicturePreview('lotplan1-preview', e.target.value);
+  });
+  document.getElementById('lotplan2-url').addEventListener('input', function (e) {
+    updatePicturePreview('lotplan2-preview', e.target.value);
   });
 
-  function compressImageFile(file) {
+  function compressImageFile(file, maxChars) {
+    var budget = maxChars || MAX_CELL_CHARS;
     var attempts = [
       { maxDim: 900, quality: 0.7 },
       { maxDim: 600, quality: 0.5 },
       { maxDim: 400, quality: 0.35 },
       { maxDim: 260, quality: 0.3 },
+      { maxDim: 180, quality: 0.25 },
     ];
     return new Promise(function (resolve, reject) {
       var reader = new FileReader();
@@ -613,8 +889,8 @@ const HTML_PAGE = `<!DOCTYPE html>
             var ctx = canvas.getContext('2d');
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
             var dataUrl = canvas.toDataURL('image/jpeg', cfg.quality);
-            if (dataUrl.length <= MAX_CELL_CHARS || attemptIndex === attempts.length - 1) {
-              resolve({ dataUrl: dataUrl, tooLarge: dataUrl.length > MAX_CELL_CHARS });
+            if (dataUrl.length <= budget || attemptIndex === attempts.length - 1) {
+              resolve({ dataUrl: dataUrl, tooLarge: dataUrl.length > budget });
             } else {
               attemptIndex += 1;
               tryAttempt();
@@ -628,15 +904,15 @@ const HTML_PAGE = `<!DOCTYPE html>
     });
   }
 
-  function handleFileInput(inputEl) {
+  function handleFileInput(inputEl, urlInputId, previewId, hintId, maxChars) {
     inputEl.addEventListener('change', function () {
       var file = inputEl.files && inputEl.files[0];
       if (!file) return;
-      var hint = document.getElementById('picture-hint');
+      var hint = document.getElementById(hintId);
       hint.textContent = 'Processing photo...';
-      compressImageFile(file).then(function (result) {
-        document.getElementById('picture-url').value = result.dataUrl;
-        updatePicturePreview(result.dataUrl);
+      compressImageFile(file, maxChars).then(function (result) {
+        document.getElementById(urlInputId).value = result.dataUrl;
+        updatePicturePreview(previewId, result.dataUrl);
         hint.textContent = result.tooLarge
           ? 'Photo compressed but is still large; it may fail to save. Try a smaller photo.'
           : 'Photo attached.';
@@ -646,13 +922,18 @@ const HTML_PAGE = `<!DOCTYPE html>
       inputEl.value = '';
     });
   }
-  handleFileInput(document.getElementById('picture-camera'));
-  handleFileInput(document.getElementById('picture-file'));
+  handleFileInput(document.getElementById('picture-camera'), 'picture-url', 'picture-preview', 'picture-hint', MAX_CELL_CHARS);
+  handleFileInput(document.getElementById('picture-file'), 'picture-url', 'picture-preview', 'picture-hint', MAX_CELL_CHARS);
+  handleFileInput(document.getElementById('lotplan1-camera'), 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint', MAX_CELL_CHARS / 2);
+  handleFileInput(document.getElementById('lotplan1-file'), 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint', MAX_CELL_CHARS / 2);
+  handleFileInput(document.getElementById('lotplan2-camera'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint', MAX_CELL_CHARS / 2);
+  handleFileInput(document.getElementById('lotplan2-file'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint', MAX_CELL_CHARS / 2);
 
   function deleteRecord(row) {
     if (!confirm('Delete this site record? This cannot be undone.')) return;
     fetch('/api/data/' + row, { method: 'DELETE' })
       .then(function (r) {
+        if (r.status === 401) { showLogin(); throw new Error('Session expired'); }
         if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || 'Delete failed'); });
         return r.json();
       })
@@ -667,6 +948,11 @@ const HTML_PAGE = `<!DOCTYPE html>
     COLUMNS.forEach(function (col) {
       record[col] = form.elements[col] ? form.elements[col].value : '';
     });
+    record['Picture'] = document.getElementById('picture-url').value;
+    var lotPlan = [document.getElementById('lotplan1-url').value, document.getElementById('lotplan2-url').value]
+      .filter(Boolean);
+    record['Lot Plan'] = lotPlan.join('\\n');
+
     var errorEl = document.getElementById('form-error');
     errorEl.style.display = 'none';
     var saveBtn = document.getElementById('form-save');
@@ -687,6 +973,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     request
       .then(function (r) {
+        if (r.status === 401) { showLogin(); throw new Error('Session expired'); }
         if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || 'Save failed'); });
         return r.json();
       })
@@ -796,7 +1083,10 @@ const HTML_PAGE = `<!DOCTYPE html>
     renderCarousel();
   });
 
-  loadData();
+  fetch('/api/me')
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (user) { if (user) showApp(user); else showLogin(); })
+    .catch(function () { showLogin(); });
 })();
 </script>
 </body>
