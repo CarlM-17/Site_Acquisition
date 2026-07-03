@@ -424,7 +424,19 @@ const HTML_PAGE = `<!DOCTYPE html>
     text-decoration: none;
     border-radius: 6px;
     font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
   }
+  .link-btn {
+    background: none; border: none; padding: 0; margin: 0;
+    color: var(--accent); text-decoration: underline; cursor: pointer;
+    font-size: inherit; font-family: inherit;
+  }
+  .image-viewer {
+    background: #111; border-radius: 8px; padding: 12px; max-width: 95vw;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+  }
+  .image-viewer img { max-width: 100%; max-height: 82vh; display: block; border-radius: 4px; }
   .card-map { border-top: 1px solid var(--border); }
   .card-map iframe { width: 100%; height: 340px; border: none; display: block; }
   .card-map .no-map { padding: 20px 24px; color: var(--muted); font-size: 14px; }
@@ -637,6 +649,13 @@ const HTML_PAGE = `<!DOCTYPE html>
         </form>
       </div>
     </div>
+
+    <div class="overlay hidden" id="image-viewer-overlay">
+      <div class="image-viewer">
+        <button type="button" class="btn btn-secondary btn-sm" id="image-viewer-close">Close</button>
+        <img id="image-viewer-img" alt="Photo" />
+      </div>
+    </div>
   </div>
 
 <script>
@@ -771,12 +790,12 @@ const HTML_PAGE = `<!DOCTYPE html>
           return '<td></td>';
         }
         if (col === 'Picture') {
-          return '<td>' + (rec[col] ? '<a href="' + escapeHtml(rec[col]) + '" target="_blank" rel="noopener">photo</a>' : '') + '</td>';
+          return '<td>' + (rec[col] ? '<button type="button" class="link-btn" data-action="view-img" data-url="' + escapeHtml(rec[col]) + '">photo</button>' : '') + '</td>';
         }
         if (col === 'Lot Plan') {
           var lp = (rec[col] || '').split('\\n').filter(Boolean);
           return '<td>' + lp.map(function (u, i) {
-            return '<a href="' + escapeHtml(u) + '" target="_blank" rel="noopener">photo ' + (i + 1) + '</a>';
+            return '<button type="button" class="link-btn" data-action="view-img" data-url="' + escapeHtml(u) + '">photo ' + (i + 1) + '</button>';
           }).join(' ') + '</td>';
         }
         if (col === 'Google Map Link') {
@@ -795,12 +814,35 @@ const HTML_PAGE = `<!DOCTYPE html>
   document.getElementById('table-body').addEventListener('click', function (e) {
     var btn = e.target.closest('button[data-action]');
     if (!btn) return;
+    var action = btn.getAttribute('data-action');
     var row = parseInt(btn.getAttribute('data-row'), 10);
-    if (btn.getAttribute('data-action') === 'edit') {
+    if (action === 'edit') {
       var rec = data.find(function (d) { return d._row === row; });
       if (rec) openForm(rec);
-    } else if (btn.getAttribute('data-action') === 'delete') {
+    } else if (action === 'delete') {
       deleteRecord(row);
+    }
+  });
+
+  document.body.addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-action="view-img"]');
+    if (!btn) return;
+    openImageViewer(btn.getAttribute('data-url'));
+  });
+
+  function openImageViewer(url) {
+    if (!url) return;
+    document.getElementById('image-viewer-img').src = url;
+    document.getElementById('image-viewer-overlay').classList.remove('hidden');
+  }
+  document.getElementById('image-viewer-close').addEventListener('click', function () {
+    document.getElementById('image-viewer-overlay').classList.add('hidden');
+    document.getElementById('image-viewer-img').src = '';
+  });
+  document.getElementById('image-viewer-overlay').addEventListener('click', function (e) {
+    if (e.target.id === 'image-viewer-overlay') {
+      document.getElementById('image-viewer-overlay').classList.add('hidden');
+      document.getElementById('image-viewer-img').src = '';
     }
   });
 
@@ -1073,7 +1115,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     var lotPlanUrls = (rec['Lot Plan'] || '').split('\\n').filter(Boolean).slice(0, 2);
     var lotPlanBtnsHtml = lotPlanUrls.length
       ? '<div class="lotplan-btns">' + lotPlanUrls.map(function (u, i) {
-          return '<a class="lotplan-btn" href="' + escapeHtml(u) + '" target="_blank" rel="noopener">View Lot Plan ' + (i + 1) + '</a>';
+          return '<button type="button" class="lotplan-btn" data-action="view-img" data-url="' + escapeHtml(u) + '">View Lot Plan ' + (i + 1) + '</button>';
         }).join('') + '</div>'
       : '';
 
