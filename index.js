@@ -444,6 +444,7 @@ const HTML_PAGE = `<!DOCTYPE html>
   /* Carousel view */
   .carousel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
   .carousel-head h2 { margin: 0; font-size: 18px; }
+  .carousel-head-left { display: flex; align-items: center; gap: 12px; }
   .nav-btns { display: flex; gap: 8px; align-items: center; }
   .nav-btns button {
     background: var(--primary);
@@ -625,7 +626,10 @@ const HTML_PAGE = `<!DOCTYPE html>
 
       <section id="panel-carousel" class="panel">
         <div class="carousel-head">
-          <h2 id="carousel-title">Site</h2>
+          <div class="carousel-head-left">
+            <h2 id="carousel-title">Site</h2>
+            <button class="btn btn-secondary btn-sm" id="carousel-edit-btn" style="display:none">Edit</button>
+          </div>
           <div class="nav-btns">
             <button id="btn-prev">&#8592; Prev</button>
             <span class="counter" id="carousel-counter">0 / 0</span>
@@ -1162,6 +1166,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     var cardEl = document.getElementById('carousel-card');
     var prevBtn = document.getElementById('btn-prev');
     var nextBtn = document.getElementById('btn-next');
+    var editBtn = document.getElementById('carousel-edit-btn');
 
     if (!data.length) {
       titleEl.textContent = 'Site';
@@ -1169,8 +1174,10 @@ const HTML_PAGE = `<!DOCTYPE html>
       cardEl.innerHTML = '<div class="status-msg">No records found.</div>';
       prevBtn.disabled = true;
       nextBtn.disabled = true;
+      editBtn.style.display = 'none';
       return;
     }
+    editBtn.style.display = '';
 
     if (currentIndex < 0) currentIndex = 0;
     if (currentIndex > data.length - 1) currentIndex = data.length - 1;
@@ -1243,6 +1250,9 @@ const HTML_PAGE = `<!DOCTYPE html>
   document.getElementById('btn-next').addEventListener('click', function () {
     currentIndex += 1;
     renderCarousel();
+  });
+  document.getElementById('carousel-edit-btn').addEventListener('click', function () {
+    if (data.length && data[currentIndex]) openForm(data[currentIndex]);
   });
 
   fetch('/api/me')
