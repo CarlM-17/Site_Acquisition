@@ -1,9 +1,10 @@
 const express = require('express');
 const crypto = require('crypto');
+const { Readable } = require('stream');
 const { google } = require('googleapis');
 
 const app = express();
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 const PORT = process.env.PORT || 3000;
 
@@ -12,6 +13,7 @@ const SHEET_NAME = process.env.SHEET_NAME || 'site';
 const USER_SHEET_NAME = process.env.USER_SHEET_NAME || 'User';
 const CLIENT_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
 const PRIVATE_KEY = (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+const DRIVE_FOLDER_ID = process.env.DRIVE_FOLDER_ID || '';
 
 const COLUMNS = [
   'No', 'Address', 'Google Map Link', 'Picture', 'Size', 'Rate',
@@ -24,15 +26,25 @@ const ADMIN_ONLY_FIELDS = ['Visited', 'Status'];
 let cachedSheetGid = null;
 const sessions = new Map();
 
-function getSheetsClient() {
+function getAuthClient() {
   if (!CLIENT_EMAIL || !PRIVATE_KEY) {
     throw new Error('Missing GOOGLE_CLIENT_EMAIL / GOOGLE_PRIVATE_KEY environment variables');
   }
-  const auth = new google.auth.GoogleAuth({
+  return new google.auth.GoogleAuth({
     credentials: { client_email: CLIENT_EMAIL, private_key: PRIVATE_KEY },
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    scopes: [
+      'https://www.googleapis.com/auth/spreadsheets',
+      'https://www.googleapis.com/auth/drive.file',
+    ],
   });
-  return google.sheets({ version: 'v4', auth });
+}
+
+function getSheetsClient() {
+  return google.sheets({ version: 'v4', auth: getAuthClient() });
+}
+
+function getDriveClient() {
+  return google.drive({ version: 'v3', auth: getAuthClient() });
 }
 
 async function getSheetGid(sheets) {
@@ -57,11 +69,12 @@ function driveDirectUrl(url) {
   if (!url) return '';
   const trimmed = url.trim();
   if (trimmed.indexOf('data:') === 0) return trimmed;
+  if (trimmed.indexOf('drive.google.com/thumbnail') !== -1) return trimmed;
   let match = trimmed.match(/drive\.google\.com\/file\/d\/([^/]+)/);
-  if (match) return 'https://drive.google.com/uc?export=view&id=' + match[1];
+  if (match) return 'https://drive.google.com/thumbnail?id=' + match[1] + '&sz=w2000';
   match = trimmed.match(/[?&]id=([^&]+)/);
   if (match && trimmed.includes('drive.google.com')) {
-    return 'https://drive.google.com/uc?export=view&id=' + match[1];
+    return 'https://drive.google.com/thumbnail?id=' + match[1] + '&sz=w2000';
   }
   return trimmed;
 }
@@ -233,6 +246,60 @@ app.delete('/api/data/:row', requireAuth, async (req, res) => {
       },
     });
     res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/upload', requireAuth, async (req, res) => {
+  try {
+    if (!DRIVE_FOLDER_ID) {
+      return res.status(500).json({ error: 'Missing DRIVE_FOLDER_ID environment variable' });
+    }
+    const dataUrl = (req.body && req.body.dataUrl) || '';
+    const commaIdx = dataUrl.indexOf(',');
+    if (dataUrl.indexOf('data:image/') !== 0 || commaIdx === -1) {
+      return res.status(400).json({ error: 'Invalid image data' });
+    }
+    const meta = dataUrl.slice(5, commaIdx);
+    const mime = meta.split(';')[0];
+    const ext = mime === 'image/jpeg' ? 'jpg' : mime.split('/')[1];
+    const base64Data = dataUrl.slice(commaIdx + 1);
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    const drive = getDriveClient();
+    const created = await drive.files.create({
+      requestBody: {
+        name: 'site-photo-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex') + '.' + ext,
+        parents: [DRIVE_FOLDER_ID],
+      },
+      media: { mimeType: mime, body: Readable.from(buffer) },
+      fields: 'id',
+    });
+    const fileId = created.data.id;
+    await drive.permissions.create({
+      fileId: fileId,
+      requestBody: { role: 'reader', type: 'anyone' },
+    });
+    res.json({ success: true, url: 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w2000', fileId: fileId });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/photo/:fileId', requireAuth, async (req, res) => {
+  try {
+    const drive = getDriveClient();
+    const fileId = req.params.fileId;
+    const meta = await drive.files.get({ fileId: fileId, fields: 'name,mimeType' });
+    res.setHeader('Content-Type', meta.data.mimeType || 'application/octet-stream');
+    if (req.query.download) {
+      res.setHeader('Content-Disposition', 'attachment; filename="' + (meta.data.name || 'photo') + '"');
+    }
+    const result = await drive.files.get({ fileId: fileId, alt: 'media' }, { responseType: 'stream' });
+    result.data.pipe(res);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -676,8 +743,6 @@ const HTML_PAGE = `<!DOCTYPE html>
   var currentIndex = 0;
   var editingRow = null;
   var currentUser = null;
-  var MAX_CELL_CHARS = 45000;
-  var LOT_PLAN_SLOT_CHARS = 24000;
 
   var loginWrap = document.getElementById('login-wrap');
   var appShell = document.getElementById('app-shell');
@@ -841,19 +906,36 @@ const HTML_PAGE = `<!DOCTYPE html>
     openImageViewer(btn.getAttribute('data-url'));
   });
 
+  function driveFileIdFromUrl(url) {
+    var idx = url.indexOf('id=');
+    if (idx === -1) return null;
+    var rest = url.slice(idx + 3);
+    var ampIdx = rest.indexOf('&');
+    return ampIdx === -1 ? rest : rest.slice(0, ampIdx);
+  }
+
   function openImageViewer(url) {
     if (!url) return;
     document.getElementById('image-viewer-img').src = url;
-    var ext = 'jpg';
+    var downloadLink = document.getElementById('image-viewer-download');
     if (url.indexOf('data:image/') === 0) {
+      var ext = 'jpg';
       var afterPrefix = url.slice(11);
       var semiIdx = afterPrefix.indexOf(';');
       var mime = semiIdx > -1 ? afterPrefix.slice(0, semiIdx) : afterPrefix;
       if (mime) ext = mime === 'jpeg' ? 'jpg' : mime;
+      downloadLink.href = url;
+      downloadLink.setAttribute('download', 'photo.' + ext);
+    } else {
+      var fileId = url.indexOf('drive.google.com') > -1 ? driveFileIdFromUrl(url) : null;
+      if (fileId) {
+        downloadLink.href = '/api/photo/' + fileId + '?download=1';
+        downloadLink.removeAttribute('download');
+      } else {
+        downloadLink.href = url;
+        downloadLink.setAttribute('download', 'photo.jpg');
+      }
     }
-    var downloadLink = document.getElementById('image-viewer-download');
-    downloadLink.href = url;
-    downloadLink.setAttribute('download', 'photo.' + ext);
     document.getElementById('image-viewer-overlay').classList.remove('hidden');
   }
   document.getElementById('image-viewer-close').addEventListener('click', function () {
@@ -943,17 +1025,9 @@ const HTML_PAGE = `<!DOCTYPE html>
     updatePicturePreview('lotplan2-preview', e.target.value);
   });
 
-  function compressImageFile(file, maxChars) {
-    var budget = maxChars || MAX_CELL_CHARS;
-    var attempts = [
-      { maxDim: 1280, quality: 0.82 },
-      { maxDim: 1000, quality: 0.72 },
-      { maxDim: 800, quality: 0.6 },
-      { maxDim: 600, quality: 0.5 },
-      { maxDim: 450, quality: 0.4 },
-      { maxDim: 320, quality: 0.32 },
-      { maxDim: 220, quality: 0.28 },
-    ];
+  function compressImageFile(file) {
+    var maxDim = 1800;
+    var quality = 0.87;
     return new Promise(function (resolve, reject) {
       var reader = new FileReader();
       reader.onerror = function () { reject(new Error('Could not read file')); };
@@ -961,24 +1035,13 @@ const HTML_PAGE = `<!DOCTYPE html>
         var img = new Image();
         img.onerror = function () { reject(new Error('Could not read image')); };
         img.onload = function () {
-          var attemptIndex = 0;
-          function tryAttempt() {
-            var cfg = attempts[attemptIndex];
-            var scale = Math.min(1, cfg.maxDim / Math.max(img.width, img.height));
-            var canvas = document.createElement('canvas');
-            canvas.width = Math.max(1, Math.round(img.width * scale));
-            canvas.height = Math.max(1, Math.round(img.height * scale));
-            var ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            var dataUrl = canvas.toDataURL('image/jpeg', cfg.quality);
-            if (dataUrl.length <= budget || attemptIndex === attempts.length - 1) {
-              resolve({ dataUrl: dataUrl, tooLarge: dataUrl.length > budget });
-            } else {
-              attemptIndex += 1;
-              tryAttempt();
-            }
-          }
-          tryAttempt();
+          var scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+          var canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(img.width * scale));
+          canvas.height = Math.max(1, Math.round(img.height * scale));
+          var ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
         };
         img.src = reader.result;
       };
@@ -986,30 +1049,38 @@ const HTML_PAGE = `<!DOCTYPE html>
     });
   }
 
-  function handleFileInput(inputEl, urlInputId, previewId, hintId, maxChars) {
+  function handleFileInput(inputEl, urlInputId, previewId, hintId) {
     inputEl.addEventListener('change', function () {
       var file = inputEl.files && inputEl.files[0];
       if (!file) return;
       var hint = document.getElementById(hintId);
-      hint.textContent = 'Processing photo...';
-      compressImageFile(file, maxChars).then(function (result) {
-        document.getElementById(urlInputId).value = result.dataUrl;
-        updatePicturePreview(previewId, result.dataUrl);
-        hint.textContent = result.tooLarge
-          ? 'Photo compressed but is still large; it may fail to save. Try a smaller photo.'
-          : 'Photo attached.';
+      hint.textContent = 'Compressing photo...';
+      compressImageFile(file).then(function (dataUrl) {
+        hint.textContent = 'Uploading photo...';
+        return fetch('/api/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dataUrl: dataUrl }),
+        }).then(function (r) {
+          if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || 'Upload failed'); });
+          return r.json();
+        });
+      }).then(function (result) {
+        document.getElementById(urlInputId).value = result.url;
+        updatePicturePreview(previewId, result.url);
+        hint.textContent = 'Photo uploaded.';
       }).catch(function (err) {
-        hint.textContent = 'Failed to process photo: ' + err.message;
+        hint.textContent = 'Failed to upload photo: ' + err.message;
       });
       inputEl.value = '';
     });
   }
-  handleFileInput(document.getElementById('picture-camera'), 'picture-url', 'picture-preview', 'picture-hint', MAX_CELL_CHARS);
-  handleFileInput(document.getElementById('picture-file'), 'picture-url', 'picture-preview', 'picture-hint', MAX_CELL_CHARS);
-  handleFileInput(document.getElementById('lotplan1-camera'), 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint', LOT_PLAN_SLOT_CHARS);
-  handleFileInput(document.getElementById('lotplan1-file'), 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint', LOT_PLAN_SLOT_CHARS);
-  handleFileInput(document.getElementById('lotplan2-camera'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint', LOT_PLAN_SLOT_CHARS);
-  handleFileInput(document.getElementById('lotplan2-file'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint', LOT_PLAN_SLOT_CHARS);
+  handleFileInput(document.getElementById('picture-camera'), 'picture-url', 'picture-preview', 'picture-hint');
+  handleFileInput(document.getElementById('picture-file'), 'picture-url', 'picture-preview', 'picture-hint');
+  handleFileInput(document.getElementById('lotplan1-camera'), 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint');
+  handleFileInput(document.getElementById('lotplan1-file'), 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint');
+  handleFileInput(document.getElementById('lotplan2-camera'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint');
+  handleFileInput(document.getElementById('lotplan2-file'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint');
 
   function deleteRecord(row) {
     if (!confirm('Delete this site record? This cannot be undone.')) return;
