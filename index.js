@@ -1,6 +1,6 @@
 const express = require('express');
 const crypto = require('crypto');
-const { Readable } = require('stream');
+const https = require('https');
 const { google } = require('googleapis');
 
 const app = express();
@@ -15,6 +15,11 @@ const CLIENT_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
 const PRIVATE_KEY = (process.env.GOOGLE_PRIVATE_KEY || '').replace(/\\n/g, '\n');
 const DRIVE_FOLDER_ID = process.env.DRIVE_FOLDER_ID || '';
 
+const OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID || '';
+const OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET || '';
+const OAUTH_REFRESH_TOKEN = process.env.GOOGLE_OAUTH_REFRESH_TOKEN || '';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
+
 const COLUMNS = [
   'No', 'Address', 'Google Map Link', 'Picture', 'Size', 'Rate',
   'Lease Term', 'Lease Type', 'Frontage', 'Store Format', 'Nearest PG',
@@ -26,25 +31,178 @@ const ADMIN_ONLY_FIELDS = ['Visited', 'Status'];
 let cachedSheetGid = null;
 const sessions = new Map();
 
-function getAuthClient() {
+function getSheetsAuth() {
   if (!CLIENT_EMAIL || !PRIVATE_KEY) {
     throw new Error('Missing GOOGLE_CLIENT_EMAIL / GOOGLE_PRIVATE_KEY environment variables');
   }
   return new google.auth.GoogleAuth({
     credentials: { client_email: CLIENT_EMAIL, private_key: PRIVATE_KEY },
-    scopes: [
-      'https://www.googleapis.com/auth/spreadsheets',
-      'https://www.googleapis.com/auth/drive.file',
-    ],
+    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
 }
 
 function getSheetsClient() {
-  return google.sheets({ version: 'v4', auth: getAuthClient() });
+  return google.sheets({ version: 'v4', auth: getSheetsAuth() });
 }
 
-function getDriveClient() {
-  return google.drive({ version: 'v3', auth: getAuthClient() });
+// ---- Native https for Google Drive/OAuth (googleapis has Premature-close bugs on Railway) ----
+function httpsRequest(options, body) {
+  return new Promise((resolve, reject) => {
+    const opts = Object.assign({ family: 4 }, options);
+    const req = https.request(opts, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+    req.setTimeout(30000, () => { req.destroy(new Error('Request to Google timed out')); });
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function oauthTokenRequest(params) {
+  if (!OAUTH_CLIENT_ID || !OAUTH_CLIENT_SECRET) {
+    throw new Error('Missing GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET environment variables');
+  }
+  const body = new URLSearchParams(params).toString();
+  return httpsRequest({
+    method: 'POST',
+    hostname: 'oauth2.googleapis.com',
+    path: '/token',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Length': Buffer.byteLength(body),
+    },
+  }, body).then((r) => {
+    const data = JSON.parse(r.body.toString() || '{}');
+    if (r.status >= 400) {
+      throw new Error(data.error_description || data.error || ('Token request failed (' + r.status + ')'));
+    }
+    return data;
+  });
+}
+
+function exchangeCodeForTokens(code, redirectUri) {
+  return oauthTokenRequest({
+    code: code,
+    client_id: OAUTH_CLIENT_ID,
+    client_secret: OAUTH_CLIENT_SECRET,
+    redirect_uri: redirectUri,
+    grant_type: 'authorization_code',
+  });
+}
+
+let accessTokenCache = { token: null, expiry: 0 };
+async function getDriveAccessToken() {
+  if (!OAUTH_REFRESH_TOKEN) {
+    throw new Error('Photo storage is not set up yet. Open /oauth/setup to connect Google Drive.');
+  }
+  const now = Date.now();
+  if (accessTokenCache.token && now < accessTokenCache.expiry - 60000) return accessTokenCache.token;
+  const data = await oauthTokenRequest({
+    client_id: OAUTH_CLIENT_ID,
+    client_secret: OAUTH_CLIENT_SECRET,
+    refresh_token: OAUTH_REFRESH_TOKEN,
+    grant_type: 'refresh_token',
+  });
+  if (!data.access_token) throw new Error('Failed to refresh Google access token');
+  accessTokenCache = { token: data.access_token, expiry: now + (data.expires_in || 3600) * 1000 };
+  return data.access_token;
+}
+
+async function driveUpload(buffer, mime, name, folderId) {
+  const token = await getDriveAccessToken();
+  const boundary = '----camanava' + crypto.randomBytes(8).toString('hex');
+  const metadata = { name: name };
+  if (folderId) metadata.parents = [folderId];
+  const pre = Buffer.from(
+    '--' + boundary + '\r\n' +
+    'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+    JSON.stringify(metadata) + '\r\n' +
+    '--' + boundary + '\r\n' +
+    'Content-Type: ' + mime + '\r\n\r\n'
+  );
+  const post = Buffer.from('\r\n--' + boundary + '--');
+  const payload = Buffer.concat([pre, buffer, post]);
+  const r = await httpsRequest({
+    method: 'POST',
+    hostname: 'www.googleapis.com',
+    path: '/upload/drive/v3/files?uploadType=multipart&fields=id',
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Content-Type': 'multipart/related; boundary=' + boundary,
+      'Content-Length': payload.length,
+    },
+  }, payload);
+  const data = JSON.parse(r.body.toString() || '{}');
+  if (r.status >= 400) throw new Error((data.error && data.error.message) || 'Drive upload failed');
+  return data.id;
+}
+
+async function driveGetMeta(fileId) {
+  const token = await getDriveAccessToken();
+  const r = await httpsRequest({
+    method: 'GET',
+    hostname: 'www.googleapis.com',
+    path: '/drive/v3/files/' + encodeURIComponent(fileId) + '?fields=name,mimeType',
+    headers: { 'Authorization': 'Bearer ' + token },
+  });
+  const data = JSON.parse(r.body.toString() || '{}');
+  if (r.status >= 400) throw new Error((data.error && data.error.message) || 'File not found');
+  return data;
+}
+
+async function driveGetMedia(fileId) {
+  const token = await getDriveAccessToken();
+  const r = await httpsRequest({
+    method: 'GET',
+    hostname: 'www.googleapis.com',
+    path: '/drive/v3/files/' + encodeURIComponent(fileId) + '?alt=media',
+    headers: { 'Authorization': 'Bearer ' + token },
+  });
+  if (r.status >= 400) {
+    let msg = 'Photo download failed';
+    try { msg = JSON.parse(r.body.toString()).error.message; } catch (e) { /* binary body */ }
+    throw new Error(msg);
+  }
+  return r.body;
+}
+
+function buildAuthUrl(redirectUri) {
+  if (!OAUTH_CLIENT_ID) throw new Error('Missing GOOGLE_OAUTH_CLIENT_ID environment variable');
+  const params = new URLSearchParams({
+    client_id: OAUTH_CLIENT_ID,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    access_type: 'offline',
+    prompt: 'consent',
+    scope: DRIVE_SCOPE,
+  });
+  return 'https://accounts.google.com/o/oauth2/v2/auth?' + params.toString();
+}
+
+function computeRedirectUri(req) {
+  if (process.env.OAUTH_REDIRECT_URI) return process.env.OAUTH_REDIRECT_URI;
+  const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'https').split(',')[0].trim();
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  return proto + '://' + host + '/oauth/callback';
+}
+
+function escapeHtmlServer(str) {
+  return String(str == null ? '' : str).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+function oauthPage(title, bodyHtml) {
+  return '<!DOCTYPE html><html><head><meta charset="utf-8" />'
+    + '<meta name="viewport" content="width=device-width, initial-scale=1" />'
+    + '<title>' + escapeHtmlServer(title) + '</title>'
+    + '<style>body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:640px;margin:40px auto;padding:0 16px;color:#1f2937;}'
+    + 'h1{color:#1a5d3a;font-size:22px;}code{background:#eef1f2;padding:2px 5px;border-radius:4px;}'
+    + 'a{color:#2563eb;}</style></head><body><h1>' + escapeHtmlServer(title) + '</h1>'
+    + bodyHtml + '<p style="margin-top:24px;"><a href="/">&larr; Back to the app</a></p></body></html>';
 }
 
 async function getSheetGid(sheets) {
@@ -69,12 +227,13 @@ function driveDirectUrl(url) {
   if (!url) return '';
   const trimmed = url.trim();
   if (trimmed.indexOf('data:') === 0) return trimmed;
-  if (trimmed.indexOf('drive.google.com/thumbnail') !== -1) return trimmed;
+  if (trimmed.indexOf('/api/photo/') === 0) return trimmed;
+  // Normalize any Google Drive link to our private, authenticated proxy path.
   let match = trimmed.match(/drive\.google\.com\/file\/d\/([^/]+)/);
-  if (match) return 'https://drive.google.com/thumbnail?id=' + match[1] + '&sz=w2000';
+  if (match) return '/api/photo/' + match[1];
   match = trimmed.match(/[?&]id=([^&]+)/);
   if (match && trimmed.includes('drive.google.com')) {
-    return 'https://drive.google.com/thumbnail?id=' + match[1] + '&sz=w2000';
+    return '/api/photo/' + match[1];
   }
   return trimmed;
 }
@@ -254,9 +413,6 @@ app.delete('/api/data/:row', requireAuth, async (req, res) => {
 
 app.post('/api/upload', requireAuth, async (req, res) => {
   try {
-    if (!DRIVE_FOLDER_ID) {
-      return res.status(500).json({ error: 'Missing DRIVE_FOLDER_ID environment variable' });
-    }
     const dataUrl = (req.body && req.body.dataUrl) || '';
     const commaIdx = dataUrl.indexOf(',');
     if (dataUrl.indexOf('data:image/') !== 0 || commaIdx === -1) {
@@ -268,21 +424,10 @@ app.post('/api/upload', requireAuth, async (req, res) => {
     const base64Data = dataUrl.slice(commaIdx + 1);
     const buffer = Buffer.from(base64Data, 'base64');
 
-    const drive = getDriveClient();
-    const created = await drive.files.create({
-      requestBody: {
-        name: 'site-photo-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex') + '.' + ext,
-        parents: [DRIVE_FOLDER_ID],
-      },
-      media: { mimeType: mime, body: Readable.from(buffer) },
-      fields: 'id',
-    });
-    const fileId = created.data.id;
-    await drive.permissions.create({
-      fileId: fileId,
-      requestBody: { role: 'reader', type: 'anyone' },
-    });
-    res.json({ success: true, url: 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w2000', fileId: fileId });
+    const name = 'site-photo-' + Date.now() + '-' + crypto.randomBytes(4).toString('hex') + '.' + ext;
+    const fileId = await driveUpload(buffer, mime, name, DRIVE_FOLDER_ID);
+    // Files stay private; they are served to logged-in users through /api/photo.
+    res.json({ success: true, url: '/api/photo/' + fileId, fileId: fileId });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
@@ -291,18 +436,57 @@ app.post('/api/upload', requireAuth, async (req, res) => {
 
 app.get('/api/photo/:fileId', requireAuth, async (req, res) => {
   try {
-    const drive = getDriveClient();
     const fileId = req.params.fileId;
-    const meta = await drive.files.get({ fileId: fileId, fields: 'name,mimeType' });
-    res.setHeader('Content-Type', meta.data.mimeType || 'application/octet-stream');
+    const meta = await driveGetMeta(fileId);
+    const media = await driveGetMedia(fileId);
+    res.setHeader('Content-Type', meta.mimeType || 'application/octet-stream');
+    res.setHeader('Cache-Control', 'private, max-age=86400');
     if (req.query.download) {
-      res.setHeader('Content-Disposition', 'attachment; filename="' + (meta.data.name || 'photo') + '"');
+      res.setHeader('Content-Disposition', 'attachment; filename="' + (meta.name || 'photo') + '"');
     }
-    const result = await drive.files.get({ fileId: fileId, alt: 'media' }, { responseType: 'stream' });
-    result.data.pipe(res);
+    res.send(media);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ---- One-time Google Drive connection (OAuth) ----
+app.get('/oauth/setup', requireAuth, (req, res) => {
+  try {
+    const redirectUri = computeRedirectUri(req);
+    res.redirect(buildAuthUrl(redirectUri));
+  } catch (err) {
+    res.status(500).type('html').send(oauthPage('Setup error', escapeHtmlServer(err.message)
+      + '<p>Make sure <code>GOOGLE_OAUTH_CLIENT_ID</code> and <code>GOOGLE_OAUTH_CLIENT_SECRET</code> are set in Railway.</p>'));
+  }
+});
+
+app.get('/oauth/callback', requireAuth, async (req, res) => {
+  try {
+    const code = req.query.code;
+    if (!code) {
+      const reason = req.query.error ? escapeHtmlServer(String(req.query.error)) : 'No authorization code returned.';
+      return res.status(400).type('html').send(oauthPage('Connection cancelled', reason));
+    }
+    const redirectUri = computeRedirectUri(req);
+    const tokens = await exchangeCodeForTokens(code, redirectUri);
+    const refreshToken = tokens && tokens.refresh_token;
+    if (!refreshToken) {
+      return res.status(500).type('html').send(oauthPage('No refresh token received',
+        'Google did not return a refresh token. Remove this app access at '
+        + '<a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Google Account permissions</a>, '
+        + 'then visit <a href="/oauth/setup">/oauth/setup</a> again.'));
+    }
+    const body = '<p>Copy the value below and add it in Railway as an environment variable named '
+      + '<code>GOOGLE_OAUTH_REFRESH_TOKEN</code>, then redeploy:</p>'
+      + '<textarea readonly style="width:100%;height:90px;font-family:monospace;font-size:13px;padding:8px;">'
+      + escapeHtmlServer(refreshToken) + '</textarea>'
+      + '<p style="color:#991b1b;"><strong>Keep this secret</strong> &mdash; treat it like a password.</p>';
+    res.type('html').send(oauthPage('Google Drive connected', body));
+  } catch (err) {
+    console.error(err);
+    res.status(500).type('html').send(oauthPage('Callback error', escapeHtmlServer(err.message)));
   }
 });
 
@@ -910,14 +1094,6 @@ const HTML_PAGE = `<!DOCTYPE html>
     openImageViewer(btn.getAttribute('data-url'));
   });
 
-  function driveFileIdFromUrl(url) {
-    var idx = url.indexOf('id=');
-    if (idx === -1) return null;
-    var rest = url.slice(idx + 3);
-    var ampIdx = rest.indexOf('&');
-    return ampIdx === -1 ? rest : rest.slice(0, ampIdx);
-  }
-
   function openImageViewer(url) {
     if (!url) return;
     document.getElementById('image-viewer-img').src = url;
@@ -930,15 +1106,12 @@ const HTML_PAGE = `<!DOCTYPE html>
       if (mime) ext = mime === 'jpeg' ? 'jpg' : mime;
       downloadLink.href = url;
       downloadLink.setAttribute('download', 'photo.' + ext);
+    } else if (url.indexOf('/api/photo/') === 0) {
+      downloadLink.href = url + (url.indexOf('?') > -1 ? '&' : '?') + 'download=1';
+      downloadLink.removeAttribute('download');
     } else {
-      var fileId = url.indexOf('drive.google.com') > -1 ? driveFileIdFromUrl(url) : null;
-      if (fileId) {
-        downloadLink.href = '/api/photo/' + fileId + '?download=1';
-        downloadLink.removeAttribute('download');
-      } else {
-        downloadLink.href = url;
-        downloadLink.setAttribute('download', 'photo.jpg');
-      }
+      downloadLink.href = url;
+      downloadLink.setAttribute('download', 'photo.jpg');
     }
     document.getElementById('image-viewer-overlay').classList.remove('hidden');
   }
