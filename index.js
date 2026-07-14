@@ -731,6 +731,9 @@ const HTML_PAGE = `<!DOCTYPE html>
     display: inline-block; padding: 7px 12px; border: 1px solid var(--border); border-radius: 6px;
     background: #fff; font-size: 12px; cursor: pointer; color: var(--text);
   }
+  .file-btn-remove { border-color: #f0b4b4; color: #b91c1c; }
+  .file-btn-remove:hover { background: #fef2f2; }
+  .file-btn-remove:disabled { opacity: .5; cursor: not-allowed; }
   .picture-hint { font-size: 11px; color: var(--muted); margin-top: 4px; }
   .form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
   .form-error { color: #dc2626; font-size: 13px; margin-top: 10px; display: none; }
@@ -851,6 +854,7 @@ const HTML_PAGE = `<!DOCTYPE html>
                 <div class="picture-btns">
                   <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="picture-camera" hidden /></label>
                   <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="picture-file" hidden /></label>
+                  <button type="button" class="file-btn file-btn-remove" id="picture-remove">Remove Photo</button>
                 </div>
                 <div class="picture-hint" id="picture-hint"></div>
               </div>
@@ -873,6 +877,7 @@ const HTML_PAGE = `<!DOCTYPE html>
                   <div class="picture-btns">
                     <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="lotplan1-camera" hidden /></label>
                     <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="lotplan1-file" hidden /></label>
+                    <button type="button" class="file-btn file-btn-remove" id="lotplan1-remove">Remove Photo</button>
                   </div>
                   <div class="picture-hint" id="lotplan1-hint"></div>
                 </div>
@@ -885,6 +890,7 @@ const HTML_PAGE = `<!DOCTYPE html>
                   <div class="picture-btns">
                     <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="lotplan2-camera" hidden /></label>
                     <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="lotplan2-file" hidden /></label>
+                    <button type="button" class="file-btn file-btn-remove" id="lotplan2-remove">Remove Photo</button>
                   </div>
                   <div class="picture-hint" id="lotplan2-hint"></div>
                 </div>
@@ -1258,6 +1264,17 @@ const HTML_PAGE = `<!DOCTYPE html>
   handleFileInput(document.getElementById('lotplan1-file'), 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint');
   handleFileInput(document.getElementById('lotplan2-camera'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint');
   handleFileInput(document.getElementById('lotplan2-file'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint');
+
+  function wireRemoveButton(btnId, urlInputId, previewId, hintId) {
+    document.getElementById(btnId).addEventListener('click', function () {
+      document.getElementById(urlInputId).value = '';
+      updatePicturePreview(previewId, '');
+      document.getElementById(hintId).textContent = 'Photo removed. Click Save to apply.';
+    });
+  }
+  wireRemoveButton('picture-remove', 'picture-url', 'picture-preview', 'picture-hint');
+  wireRemoveButton('lotplan1-remove', 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint');
+  wireRemoveButton('lotplan2-remove', 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint');
 
   function deleteRecord(row) {
     if (!confirm('Delete this site record? This cannot be undone.')) return;
