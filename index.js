@@ -1265,16 +1265,22 @@ const HTML_PAGE = `<!DOCTYPE html>
   handleFileInput(document.getElementById('lotplan2-camera'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint');
   handleFileInput(document.getElementById('lotplan2-file'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint');
 
-  function wireRemoveButton(btnId, urlInputId, previewId, hintId) {
+  function wireRemoveButton(btnId, urlInputId, previewId, hintId, label) {
     document.getElementById(btnId).addEventListener('click', function () {
-      document.getElementById(urlInputId).value = '';
+      var input = document.getElementById(urlInputId);
+      if (!input.value) {
+        document.getElementById(hintId).textContent = 'No ' + label + ' to remove.';
+        return;
+      }
+      if (!confirm('Remove the ' + label + '? It will be cleared when you click Save.')) return;
+      input.value = '';
       updatePicturePreview(previewId, '');
       document.getElementById(hintId).textContent = 'Photo removed. Click Save to apply.';
     });
   }
-  wireRemoveButton('picture-remove', 'picture-url', 'picture-preview', 'picture-hint');
-  wireRemoveButton('lotplan1-remove', 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint');
-  wireRemoveButton('lotplan2-remove', 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint');
+  wireRemoveButton('picture-remove', 'picture-url', 'picture-preview', 'picture-hint', 'main Picture');
+  wireRemoveButton('lotplan1-remove', 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint', 'Lot Plan Photo 1');
+  wireRemoveButton('lotplan2-remove', 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint', 'Lot Plan Photo 2');
 
   function deleteRecord(row) {
     if (!confirm('Delete this site record? This cannot be undone.')) return;
