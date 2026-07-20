@@ -100,12 +100,21 @@ async function getDriveAccessToken() {
   }
   const now = Date.now();
   if (accessTokenCache.token && now < accessTokenCache.expiry - 60000) return accessTokenCache.token;
-  const data = await oauthTokenRequest({
-    client_id: OAUTH_CLIENT_ID,
-    client_secret: OAUTH_CLIENT_SECRET,
-    refresh_token: OAUTH_REFRESH_TOKEN,
-    grant_type: 'refresh_token',
-  });
+  let data;
+  try {
+    data = await oauthTokenRequest({
+      client_id: OAUTH_CLIENT_ID,
+      client_secret: OAUTH_CLIENT_SECRET,
+      refresh_token: OAUTH_REFRESH_TOKEN,
+      grant_type: 'refresh_token',
+    });
+  } catch (err) {
+    // invalid_grant = the refresh token expired or was revoked -> guide the user to reconnect.
+    if (/invalid_grant|expired|revoked/i.test(err.message)) {
+      throw new Error('Google Drive connection expired. Reconnect by opening /oauth/setup, then update GOOGLE_OAUTH_REFRESH_TOKEN. (Tip: set the OAuth consent screen to "In production" so it stops expiring.)');
+    }
+    throw err;
+  }
   if (!data.access_token) throw new Error('Failed to refresh Google access token');
   accessTokenCache = { token: data.access_token, expiry: now + (data.expires_in || 3600) * 1000 };
   return data.access_token;
@@ -259,6 +268,14 @@ function requireAuth(req, res, next) {
   next();
 }
 
+// Visitors are read-only. Enforced on the server so hiding buttons isn't the only guard.
+function requireEditor(req, res, next) {
+  if ((req.session.level || '').trim().toLowerCase() === 'visitor') {
+    return res.status(403).json({ error: 'Your account has view-only access.' });
+  }
+  next();
+}
+
 function setSessionCookie(res, token) {
   const secureFlag = process.env.NODE_ENV === 'production' ? '; Secure' : '';
   res.setHeader('Set-Cookie', 'sid=' + token + '; HttpOnly; Path=/; SameSite=Lax; Max-Age=43200' + secureFlag);
@@ -338,7 +355,7 @@ app.get('/api/data', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/data', requireAuth, async (req, res) => {
+app.post('/api/data', requireAuth, requireEditor, async (req, res) => {
   try {
     const sheets = getSheetsClient();
     const record = Object.assign({}, req.body || {});
@@ -361,7 +378,7 @@ app.post('/api/data', requireAuth, async (req, res) => {
   }
 });
 
-app.put('/api/data/:row', requireAuth, async (req, res) => {
+app.put('/api/data/:row', requireAuth, requireEditor, async (req, res) => {
   try {
     const rowNum = parseInt(req.params.row, 10);
     if (!rowNum || rowNum < 2) return res.status(400).json({ error: 'Invalid row' });
@@ -392,7 +409,7 @@ app.put('/api/data/:row', requireAuth, async (req, res) => {
   }
 });
 
-app.delete('/api/data/:row', requireAuth, async (req, res) => {
+app.delete('/api/data/:row', requireAuth, requireEditor, async (req, res) => {
   try {
     const rowNum = parseInt(req.params.row, 10);
     if (!rowNum || rowNum < 2) return res.status(400).json({ error: 'Invalid row' });
@@ -415,7 +432,7 @@ app.delete('/api/data/:row', requireAuth, async (req, res) => {
   }
 });
 
-app.post('/api/upload', requireAuth, async (req, res) => {
+app.post('/api/upload', requireAuth, requireEditor, async (req, res) => {
   try {
     const dataUrl = (req.body && req.body.dataUrl) || '';
     const commaIdx = dataUrl.indexOf(',');
@@ -1039,12 +1056,25 @@ const HTML_PAGE = `<!DOCTYPE html>
     return !!currentUser && currentUser.level === 'admin';
   }
 
+  function isVisitor() {
+    return !!currentUser && (currentUser.level || '').trim().toLowerCase() === 'visitor';
+  }
+
   function showApp(user) {
     currentUser = user;
     loginWrap.classList.add('hidden');
     appShell.classList.remove('hidden');
     document.getElementById('user-badge-text').textContent = user.userName + ' (' + (user.level || 'user') + ')';
+    applyRoleUI();
     loadData();
+  }
+
+  // Visitors get a read-only view: no Summary Table tab, no Add/Edit buttons.
+  function applyRoleUI() {
+    var visitor = isVisitor();
+    document.getElementById('tab-btn-table').style.display = visitor ? 'none' : '';
+    document.getElementById('btn-add-site').style.display = visitor ? 'none' : '';
+    if (visitor) switchTab('approval');
   }
 
   function showLogin() {
@@ -1234,6 +1264,7 @@ const HTML_PAGE = `<!DOCTYPE html>
   }
 
   function openForm(rec) {
+    if (isVisitor()) return;
     editingRow = rec ? rec._row : null;
     document.getElementById('form-title').textContent = rec ? 'Edit Site' : 'Add Site';
     document.getElementById('form-error').style.display = 'none';
@@ -1459,7 +1490,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       editBtn.style.display = 'none';
       return;
     }
-    editBtn.style.display = '';
+    editBtn.style.display = isVisitor() ? 'none' : '';
 
     if (state.index < 0) state.index = 0;
     if (state.index > rows.length - 1) state.index = rows.length - 1;
