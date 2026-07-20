@@ -23,7 +23,7 @@ const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 const COLUMNS = [
   'No', 'Address', 'Google Map Link', 'Picture', 'Size', 'Rate',
   'Lease Term', 'Lease Type', 'Frontage', 'Store Format', 'Nearest PG',
-  'Competitors', 'Visited', 'Lot Plan', 'Status', 'Remarks', 'Update from Mike'
+  'Competitors', 'Visited', 'Lot Plan', 'Status', 'Remarks', 'Update'
 ];
 const LAST_COL = 'Q';
 const ADMIN_ONLY_FIELDS = ['Visited', 'Status'];
@@ -318,7 +318,11 @@ app.get('/api/data', requireAuth, async (req, res) => {
         COLUMNS.forEach((col, i) => {
           rec[col] = (r[i] || '').toString();
         });
-        rec.Picture = driveDirectUrl(rec.Picture);
+        rec.Picture = rec.Picture
+          .split('\n')
+          .map((u) => driveDirectUrl(u.trim()))
+          .filter(Boolean)
+          .join('\n');
         rec['Lot Plan'] = rec['Lot Plan']
           .split('\n')
           .map((u) => driveDirectUrl(u.trim()))
@@ -794,13 +798,15 @@ const HTML_PAGE = `<!DOCTYPE html>
       </div>
     </header>
     <nav class="tabs">
-      <button id="tab-btn-table" class="active">Site Proposal</button>
-      <button id="tab-btn-carousel">Carousel View</button>
+      <button id="tab-btn-table" class="active" data-tab="table">Site Proposal Summary Table</button>
+      <button id="tab-btn-approval" data-tab="approval">Site For Approval</button>
+      <button id="tab-btn-approved" data-tab="approved">Approved</button>
+      <button id="tab-btn-disapproved" data-tab="disapproved">Disapproved</button>
     </nav>
     <main>
       <section id="panel-table" class="panel active">
         <div class="proposal-head">
-          <h2>Site Proposal</h2>
+          <h2>Site Proposal Summary Table</h2>
           <button class="btn btn-primary" id="btn-add-site">+ Add New Site</button>
         </div>
         <div class="table-wrap">
@@ -811,21 +817,49 @@ const HTML_PAGE = `<!DOCTYPE html>
         </div>
       </section>
 
-      <section id="panel-carousel" class="panel">
+      <section id="panel-approval" class="panel">
         <div class="carousel-head">
           <div class="carousel-head-left">
-            <h2 id="carousel-title">Site</h2>
-            <button class="btn btn-secondary btn-sm" id="carousel-edit-btn" style="display:none">Edit</button>
+            <h2 id="approval-title">Site</h2>
+            <button class="btn btn-secondary btn-sm carousel-edit-btn" data-carousel="approval" style="display:none">Edit</button>
           </div>
           <div class="nav-btns">
-            <button id="btn-prev">&#8592; Prev</button>
-            <span class="counter" id="carousel-counter">0 / 0</span>
-            <button id="btn-next">Next &#8594;</button>
+            <button class="carousel-prev" data-carousel="approval">&#8592; Prev</button>
+            <span class="counter" id="approval-counter">0 / 0</span>
+            <button class="carousel-next" data-carousel="approval">Next &#8594;</button>
           </div>
         </div>
-        <div class="card" id="carousel-card">
-          <div class="status-msg">Loading...</div>
+        <div class="card" id="approval-card"><div class="status-msg">Loading...</div></div>
+      </section>
+
+      <section id="panel-approved" class="panel">
+        <div class="carousel-head">
+          <div class="carousel-head-left">
+            <h2 id="approved-title">Site</h2>
+            <button class="btn btn-secondary btn-sm carousel-edit-btn" data-carousel="approved" style="display:none">Edit</button>
+          </div>
+          <div class="nav-btns">
+            <button class="carousel-prev" data-carousel="approved">&#8592; Prev</button>
+            <span class="counter" id="approved-counter">0 / 0</span>
+            <button class="carousel-next" data-carousel="approved">Next &#8594;</button>
+          </div>
         </div>
+        <div class="card" id="approved-card"><div class="status-msg">Loading...</div></div>
+      </section>
+
+      <section id="panel-disapproved" class="panel">
+        <div class="carousel-head">
+          <div class="carousel-head-left">
+            <h2 id="disapproved-title">Site</h2>
+            <button class="btn btn-secondary btn-sm carousel-edit-btn" data-carousel="disapproved" style="display:none">Edit</button>
+          </div>
+          <div class="nav-btns">
+            <button class="carousel-prev" data-carousel="disapproved">&#8592; Prev</button>
+            <span class="counter" id="disapproved-counter">0 / 0</span>
+            <button class="carousel-next" data-carousel="disapproved">Next &#8594;</button>
+          </div>
+        </div>
+        <div class="card" id="disapproved-card"><div class="status-msg">Loading...</div></div>
       </section>
     </main>
 
@@ -847,16 +881,45 @@ const HTML_PAGE = `<!DOCTYPE html>
             <div class="form-item full"><label>Address</label><input name="Address" type="text" /></div>
             <div class="form-item full"><label>Google Map Link</label><input name="Google Map Link" type="text" placeholder="Paste Google Maps link" /></div>
             <div class="form-item full">
-              <label>Picture</label>
-              <div class="picture-input">
-                <img class="picture-preview" id="picture-preview" />
-                <input name="Picture" id="picture-url" type="text" placeholder="Paste an image URL, or use a button below" />
-                <div class="picture-btns">
-                  <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="picture-camera" hidden /></label>
-                  <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="picture-file" hidden /></label>
-                  <button type="button" class="file-btn file-btn-remove" id="picture-remove">Remove Photo</button>
+              <label>Picture (up to 3 photos)</label>
+              <div class="picture-slot">
+                <div class="picture-slot-label">Photo 1</div>
+                <div class="picture-input">
+                  <img class="picture-preview" id="pic1-preview" />
+                  <input id="pic1-url" type="text" placeholder="Paste an image URL, or use a button below" />
+                  <div class="picture-btns">
+                    <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="pic1-camera" hidden /></label>
+                    <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="pic1-file" hidden /></label>
+                    <button type="button" class="file-btn file-btn-remove" id="pic1-remove">Remove Photo</button>
+                  </div>
+                  <div class="picture-hint" id="pic1-hint"></div>
                 </div>
-                <div class="picture-hint" id="picture-hint"></div>
+              </div>
+              <div class="picture-slot">
+                <div class="picture-slot-label">Photo 2</div>
+                <div class="picture-input">
+                  <img class="picture-preview" id="pic2-preview" />
+                  <input id="pic2-url" type="text" placeholder="Paste an image URL, or use a button below" />
+                  <div class="picture-btns">
+                    <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="pic2-camera" hidden /></label>
+                    <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="pic2-file" hidden /></label>
+                    <button type="button" class="file-btn file-btn-remove" id="pic2-remove">Remove Photo</button>
+                  </div>
+                  <div class="picture-hint" id="pic2-hint"></div>
+                </div>
+              </div>
+              <div class="picture-slot">
+                <div class="picture-slot-label">Photo 3</div>
+                <div class="picture-input">
+                  <img class="picture-preview" id="pic3-preview" />
+                  <input id="pic3-url" type="text" placeholder="Paste an image URL, or use a button below" />
+                  <div class="picture-btns">
+                    <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="pic3-camera" hidden /></label>
+                    <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="pic3-file" hidden /></label>
+                    <button type="button" class="file-btn file-btn-remove" id="pic3-remove">Remove Photo</button>
+                  </div>
+                  <div class="picture-hint" id="pic3-hint"></div>
+                </div>
               </div>
             </div>
             <div class="form-item"><label>Size</label><input name="Size" type="text" /></div>
@@ -868,31 +931,44 @@ const HTML_PAGE = `<!DOCTYPE html>
             <div class="form-item"><label>Nearest PG</label><input name="Nearest PG" type="text" /></div>
             <div class="form-item"><label>Competitors</label><input name="Competitors" type="text" /></div>
             <div class="form-item full">
-              <label>Lot Plan (up to 2 photos)</label>
+              <label>Lot Plan (up to 3 photos)</label>
               <div class="picture-slot">
                 <div class="picture-slot-label">Photo 1</div>
                 <div class="picture-input">
-                  <img class="picture-preview" id="lotplan1-preview" />
-                  <input id="lotplan1-url" type="text" placeholder="Paste an image URL, or use a button below" />
+                  <img class="picture-preview" id="lot1-preview" />
+                  <input id="lot1-url" type="text" placeholder="Paste an image URL, or use a button below" />
                   <div class="picture-btns">
-                    <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="lotplan1-camera" hidden /></label>
-                    <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="lotplan1-file" hidden /></label>
-                    <button type="button" class="file-btn file-btn-remove" id="lotplan1-remove">Remove Photo</button>
+                    <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="lot1-camera" hidden /></label>
+                    <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="lot1-file" hidden /></label>
+                    <button type="button" class="file-btn file-btn-remove" id="lot1-remove">Remove Photo</button>
                   </div>
-                  <div class="picture-hint" id="lotplan1-hint"></div>
+                  <div class="picture-hint" id="lot1-hint"></div>
                 </div>
               </div>
               <div class="picture-slot">
                 <div class="picture-slot-label">Photo 2</div>
                 <div class="picture-input">
-                  <img class="picture-preview" id="lotplan2-preview" />
-                  <input id="lotplan2-url" type="text" placeholder="Paste an image URL, or use a button below" />
+                  <img class="picture-preview" id="lot2-preview" />
+                  <input id="lot2-url" type="text" placeholder="Paste an image URL, or use a button below" />
                   <div class="picture-btns">
-                    <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="lotplan2-camera" hidden /></label>
-                    <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="lotplan2-file" hidden /></label>
-                    <button type="button" class="file-btn file-btn-remove" id="lotplan2-remove">Remove Photo</button>
+                    <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="lot2-camera" hidden /></label>
+                    <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="lot2-file" hidden /></label>
+                    <button type="button" class="file-btn file-btn-remove" id="lot2-remove">Remove Photo</button>
                   </div>
-                  <div class="picture-hint" id="lotplan2-hint"></div>
+                  <div class="picture-hint" id="lot2-hint"></div>
+                </div>
+              </div>
+              <div class="picture-slot">
+                <div class="picture-slot-label">Photo 3</div>
+                <div class="picture-input">
+                  <img class="picture-preview" id="lot3-preview" />
+                  <input id="lot3-url" type="text" placeholder="Paste an image URL, or use a button below" />
+                  <div class="picture-btns">
+                    <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="lot3-camera" hidden /></label>
+                    <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="lot3-file" hidden /></label>
+                    <button type="button" class="file-btn file-btn-remove" id="lot3-remove">Remove Photo</button>
+                  </div>
+                  <div class="picture-hint" id="lot3-hint"></div>
                 </div>
               </div>
             </div>
@@ -907,7 +983,7 @@ const HTML_PAGE = `<!DOCTYPE html>
               <div class="lock-hint" id="status-lock-hint"></div>
             </div>
             <div class="form-item full"><label>Remarks</label><textarea name="Remarks"></textarea></div>
-            <div class="form-item full"><label>Update from Mike</label><textarea name="Update from Mike"></textarea></div>
+            <div class="form-item full"><label>Update</label><textarea name="Update"></textarea></div>
           </div>
           <div class="form-error" id="form-error"></div>
           <div class="form-actions">
@@ -931,12 +1007,30 @@ const HTML_PAGE = `<!DOCTYPE html>
 
 <script>
 (function () {
-  var COLUMNS = ['No','Address','Google Map Link','Picture','Size','Rate','Lease Term','Lease Type','Frontage','Store Format','Nearest PG','Competitors','Visited','Lot Plan','Status','Remarks','Update from Mike'];
+  var COLUMNS = ['No','Address','Google Map Link','Picture','Size','Rate','Lease Term','Lease Type','Frontage','Store Format','Nearest PG','Competitors','Visited','Lot Plan','Status','Remarks','Update'];
   var ADMIN_ONLY_FIELDS = ['Visited', 'Status'];
+  var PIC_SLOTS = ['pic1', 'pic2', 'pic3'];
+  var LOT_SLOTS = ['lot1', 'lot2', 'lot3'];
   var data = [];
-  var currentIndex = 0;
   var editingRow = null;
   var currentUser = null;
+
+  // Three status-filtered carousels, each with its own position.
+  var CAROUSELS = {
+    approval: {
+      index: 0,
+      filter: function (r) { var s = (r['Status'] || '').trim().toLowerCase(); return s === '' || s === 'pending'; },
+    },
+    approved: {
+      index: 0,
+      filter: function (r) { return (r['Status'] || '').trim().toLowerCase() === 'approved'; },
+    },
+    disapproved: {
+      index: 0,
+      filter: function (r) { return (r['Status'] || '').trim().toLowerCase() === 'disapproved'; },
+    },
+  };
+  function filteredFor(key) { return data.filter(CAROUSELS[key].filter); }
 
   var loginWrap = document.getElementById('login-wrap');
   var appShell = document.getElementById('app-shell');
@@ -992,20 +1086,17 @@ const HTML_PAGE = `<!DOCTYPE html>
     fetch('/api/logout', { method: 'POST' }).finally(function () { showLogin(); });
   });
 
-  var tabBtnTable = document.getElementById('tab-btn-table');
-  var tabBtnCarousel = document.getElementById('tab-btn-carousel');
-  var panelTable = document.getElementById('panel-table');
-  var panelCarousel = document.getElementById('panel-carousel');
-
-  tabBtnTable.addEventListener('click', function () { switchTab('table'); });
-  tabBtnCarousel.addEventListener('click', function () { switchTab('carousel'); });
+  var TABS = ['table', 'approval', 'approved', 'disapproved'];
+  TABS.forEach(function (name) {
+    document.getElementById('tab-btn-' + name).addEventListener('click', function () { switchTab(name); });
+  });
 
   function switchTab(name) {
-    var isTable = name === 'table';
-    tabBtnTable.classList.toggle('active', isTable);
-    tabBtnCarousel.classList.toggle('active', !isTable);
-    panelTable.classList.toggle('active', isTable);
-    panelCarousel.classList.toggle('active', !isTable);
+    TABS.forEach(function (t) {
+      document.getElementById('tab-btn-' + t).classList.toggle('active', t === name);
+      document.getElementById('panel-' + t).classList.toggle('active', t === name);
+    });
+    if (name !== 'table') renderCarousel(name);
   }
 
   function escapeHtml(str) {
@@ -1024,12 +1115,12 @@ const HTML_PAGE = `<!DOCTYPE html>
       .then(function (records) {
         data = records;
         renderTable();
-        renderCarousel();
+        renderAllCarousels();
       })
       .catch(function (err) {
         var msg = '<div class="status-msg">Failed to load data: ' + escapeHtml(err.message) + '</div>';
         document.getElementById('table-body').innerHTML = '<tr><td colspan="' + (COLUMNS.length + 1) + '">' + msg + '</td></tr>';
-        document.getElementById('carousel-card').innerHTML = msg;
+        Object.keys(CAROUSELS).forEach(function (k) { document.getElementById(k + '-card').innerHTML = msg; });
       });
   }
 
@@ -1059,12 +1150,9 @@ const HTML_PAGE = `<!DOCTYPE html>
           if (v === 'no') return '<td><span class="badge badge-no">No</span></td>';
           return '<td></td>';
         }
-        if (col === 'Picture') {
-          return '<td>' + (rec[col] ? '<button type="button" class="link-btn" data-action="view-img" data-url="' + escapeHtml(rec[col]) + '">photo</button>' : '') + '</td>';
-        }
-        if (col === 'Lot Plan') {
-          var lp = (rec[col] || '').split('\\n').filter(Boolean);
-          return '<td>' + lp.map(function (u, i) {
+        if (col === 'Picture' || col === 'Lot Plan') {
+          var photos = (rec[col] || '').split('\\n').filter(Boolean);
+          return '<td>' + photos.map(function (u, i) {
             return '<button type="button" class="link-btn" data-action="view-img" data-url="' + escapeHtml(u) + '">photo ' + (i + 1) + '</button>';
           }).join(' ') + '</td>';
         }
@@ -1166,17 +1254,19 @@ const HTML_PAGE = `<!DOCTYPE html>
     document.getElementById('visited-lock-hint').textContent = lockMsg;
     document.getElementById('status-lock-hint').textContent = lockMsg;
 
-    updatePicturePreview('picture-preview', rec ? rec['Picture'] : '');
-    document.getElementById('picture-url').value = rec ? (rec['Picture'] || '') : '';
-    document.getElementById('picture-hint').textContent = '';
+    var picParts = rec ? (rec['Picture'] || '').split('\\n').filter(Boolean) : [];
+    PIC_SLOTS.forEach(function (p, i) {
+      document.getElementById(p + '-url').value = picParts[i] || '';
+      updatePicturePreview(p + '-preview', picParts[i] || '');
+      document.getElementById(p + '-hint').textContent = '';
+    });
 
-    var lotPlanParts = rec ? (rec['Lot Plan'] || '').split('\\n').filter(Boolean) : [];
-    document.getElementById('lotplan1-url').value = lotPlanParts[0] || '';
-    document.getElementById('lotplan2-url').value = lotPlanParts[1] || '';
-    updatePicturePreview('lotplan1-preview', lotPlanParts[0] || '');
-    updatePicturePreview('lotplan2-preview', lotPlanParts[1] || '');
-    document.getElementById('lotplan1-hint').textContent = '';
-    document.getElementById('lotplan2-hint').textContent = '';
+    var lotParts = rec ? (rec['Lot Plan'] || '').split('\\n').filter(Boolean) : [];
+    LOT_SLOTS.forEach(function (p, i) {
+      document.getElementById(p + '-url').value = lotParts[i] || '';
+      updatePicturePreview(p + '-preview', lotParts[i] || '');
+      document.getElementById(p + '-hint').textContent = '';
+    });
 
     document.getElementById('form-overlay').classList.remove('hidden');
   }
@@ -1198,14 +1288,10 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
   }
 
-  document.getElementById('picture-url').addEventListener('input', function (e) {
-    updatePicturePreview('picture-preview', e.target.value);
-  });
-  document.getElementById('lotplan1-url').addEventListener('input', function (e) {
-    updatePicturePreview('lotplan1-preview', e.target.value);
-  });
-  document.getElementById('lotplan2-url').addEventListener('input', function (e) {
-    updatePicturePreview('lotplan2-preview', e.target.value);
+  PIC_SLOTS.concat(LOT_SLOTS).forEach(function (p) {
+    document.getElementById(p + '-url').addEventListener('input', function (e) {
+      updatePicturePreview(p + '-preview', e.target.value);
+    });
   });
 
   function compressImageFile(file) {
@@ -1258,29 +1344,23 @@ const HTML_PAGE = `<!DOCTYPE html>
       inputEl.value = '';
     });
   }
-  handleFileInput(document.getElementById('picture-camera'), 'picture-url', 'picture-preview', 'picture-hint');
-  handleFileInput(document.getElementById('picture-file'), 'picture-url', 'picture-preview', 'picture-hint');
-  handleFileInput(document.getElementById('lotplan1-camera'), 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint');
-  handleFileInput(document.getElementById('lotplan1-file'), 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint');
-  handleFileInput(document.getElementById('lotplan2-camera'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint');
-  handleFileInput(document.getElementById('lotplan2-file'), 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint');
-
-  function wireRemoveButton(btnId, urlInputId, previewId, hintId, label) {
-    document.getElementById(btnId).addEventListener('click', function () {
-      var input = document.getElementById(urlInputId);
+  function wireSlot(p, label) {
+    handleFileInput(document.getElementById(p + '-camera'), p + '-url', p + '-preview', p + '-hint');
+    handleFileInput(document.getElementById(p + '-file'), p + '-url', p + '-preview', p + '-hint');
+    document.getElementById(p + '-remove').addEventListener('click', function () {
+      var input = document.getElementById(p + '-url');
       if (!input.value) {
-        document.getElementById(hintId).textContent = 'No ' + label + ' to remove.';
+        document.getElementById(p + '-hint').textContent = 'No ' + label + ' to remove.';
         return;
       }
       if (!confirm('Remove the ' + label + '? It will be cleared when you click Save.')) return;
       input.value = '';
-      updatePicturePreview(previewId, '');
-      document.getElementById(hintId).textContent = 'Photo removed. Click Save to apply.';
+      updatePicturePreview(p + '-preview', '');
+      document.getElementById(p + '-hint').textContent = 'Photo removed. Click Save to apply.';
     });
   }
-  wireRemoveButton('picture-remove', 'picture-url', 'picture-preview', 'picture-hint', 'main Picture');
-  wireRemoveButton('lotplan1-remove', 'lotplan1-url', 'lotplan1-preview', 'lotplan1-hint', 'Lot Plan Photo 1');
-  wireRemoveButton('lotplan2-remove', 'lotplan2-url', 'lotplan2-preview', 'lotplan2-hint', 'Lot Plan Photo 2');
+  PIC_SLOTS.forEach(function (p, i) { wireSlot(p, 'Picture Photo ' + (i + 1)); });
+  LOT_SLOTS.forEach(function (p, i) { wireSlot(p, 'Lot Plan Photo ' + (i + 1)); });
 
   function deleteRecord(row) {
     if (!confirm('Delete this site record? This cannot be undone.')) return;
@@ -1301,10 +1381,10 @@ const HTML_PAGE = `<!DOCTYPE html>
     COLUMNS.forEach(function (col) {
       record[col] = form.elements[col] ? form.elements[col].value : '';
     });
-    record['Picture'] = document.getElementById('picture-url').value;
-    var lotPlan = [document.getElementById('lotplan1-url').value, document.getElementById('lotplan2-url').value]
-      .filter(Boolean);
-    record['Lot Plan'] = lotPlan.join('\\n');
+    record['Picture'] = PIC_SLOTS.map(function (p) { return document.getElementById(p + '-url').value; })
+      .filter(Boolean).join('\\n');
+    record['Lot Plan'] = LOT_SLOTS.map(function (p) { return document.getElementById(p + '-url').value; })
+      .filter(Boolean).join('\\n');
 
     var errorEl = document.getElementById('form-error');
     errorEl.style.display = 'none';
@@ -1356,18 +1436,24 @@ const HTML_PAGE = `<!DOCTYPE html>
     return '';
   }
 
-  function renderCarousel() {
-    var titleEl = document.getElementById('carousel-title');
-    var counterEl = document.getElementById('carousel-counter');
-    var cardEl = document.getElementById('carousel-card');
-    var prevBtn = document.getElementById('btn-prev');
-    var nextBtn = document.getElementById('btn-next');
-    var editBtn = document.getElementById('carousel-edit-btn');
+  function renderAllCarousels() {
+    Object.keys(CAROUSELS).forEach(renderCarousel);
+  }
 
-    if (!data.length) {
+  function renderCarousel(key) {
+    var state = CAROUSELS[key];
+    var rows = filteredFor(key);
+    var titleEl = document.getElementById(key + '-title');
+    var counterEl = document.getElementById(key + '-counter');
+    var cardEl = document.getElementById(key + '-card');
+    var prevBtn = document.querySelector('.carousel-prev[data-carousel="' + key + '"]');
+    var nextBtn = document.querySelector('.carousel-next[data-carousel="' + key + '"]');
+    var editBtn = document.querySelector('.carousel-edit-btn[data-carousel="' + key + '"]');
+
+    if (!rows.length) {
       titleEl.textContent = 'Site';
       counterEl.textContent = '0 / 0';
-      cardEl.innerHTML = '<div class="status-msg">No records found.</div>';
+      cardEl.innerHTML = '<div class="status-msg">No sites in this list.</div>';
       prevBtn.disabled = true;
       nextBtn.disabled = true;
       editBtn.style.display = 'none';
@@ -1375,14 +1461,14 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
     editBtn.style.display = '';
 
-    if (currentIndex < 0) currentIndex = 0;
-    if (currentIndex > data.length - 1) currentIndex = data.length - 1;
+    if (state.index < 0) state.index = 0;
+    if (state.index > rows.length - 1) state.index = rows.length - 1;
 
-    var rec = data[currentIndex];
-    titleEl.textContent = 'Site #' + (rec['No'] || (currentIndex + 1));
-    counterEl.textContent = (currentIndex + 1) + ' / ' + data.length;
-    prevBtn.disabled = currentIndex === 0;
-    nextBtn.disabled = currentIndex === data.length - 1;
+    var rec = rows[state.index];
+    titleEl.textContent = 'Site #' + (rec['No'] || (state.index + 1));
+    counterEl.textContent = (state.index + 1) + ' / ' + rows.length;
+    prevBtn.disabled = state.index === 0;
+    nextBtn.disabled = state.index === rows.length - 1;
 
     var infoFields = ['Size', 'Rate', 'Lease Term', 'Lease Type', 'Frontage', 'Store Format', 'Nearest PG', 'Competitors', 'Status'];
     var visited = (rec['Visited'] || '').toLowerCase();
@@ -1390,17 +1476,24 @@ const HTML_PAGE = `<!DOCTYPE html>
       ? '<span class="badge badge-yes">Yes</span>'
       : (visited === 'no' ? '<span class="badge badge-no">No</span>' : '');
 
-    var photoHtml = rec['Picture']
-      ? '<img id="carousel-photo-img" src="' + escapeHtml(rec['Picture']) + '" alt="Site photo" />'
+    var pics = (rec['Picture'] || '').split('\\n').filter(Boolean);
+    var mainPic = pics[0] || '';
+    var photoHtml = mainPic
+      ? '<img class="carousel-photo-img" src="' + escapeHtml(mainPic) + '" alt="Site photo" data-action="view-img" data-url="' + escapeHtml(mainPic) + '" style="cursor:zoom-in" />'
       : '';
-    var noPhotoFallback = '<div class="no-photo" id="carousel-no-photo" ' + (rec['Picture'] ? 'style="display:none"' : '') + '>No photo available</div>';
+    var noPhotoFallback = '<div class="no-photo carousel-no-photo" ' + (mainPic ? 'style="display:none"' : '') + '>No photo available</div>';
+    var picBtnsHtml = pics.length > 1
+      ? '<div class="lotplan-btns">' + pics.map(function (u, i) {
+          return '<button type="button" class="lotplan-btn" data-action="view-img" data-url="' + escapeHtml(u) + '">View Photo ' + (i + 1) + '</button>';
+        }).join('') + '</div>'
+      : '';
 
     var infoItemsHtml = infoFields.map(function (f) {
       return '<div class="info-item"><label>' + escapeHtml(f) + '</label><div class="val">' + (escapeHtml(rec[f]) || '&mdash;') + '</div></div>';
     }).join('') + '<div class="info-item"><label>Visited</label><div class="val">' + (visitedBadge || '&mdash;') + '</div></div>';
 
     var remarksHtml = '<div class="info-item full"><label>Remarks</label><div class="val">' + (escapeHtml(rec['Remarks']) || '&mdash;') + '</div></div>' +
-      '<div class="info-item full"><label>Update from Mike</label><div class="val">' + (escapeHtml(rec['Update from Mike']) || '&mdash;') + '</div></div>';
+      '<div class="info-item full"><label>Update</label><div class="val">' + (escapeHtml(rec['Update']) || '&mdash;') + '</div></div>';
 
     var mapSrc = mapEmbedSrc(rec);
     var mapHtml = mapSrc
@@ -1409,7 +1502,7 @@ const HTML_PAGE = `<!DOCTYPE html>
 
     var mapLinkHref = rec['Google Map Link'] || (rec['Address'] ? 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(rec['Address']) : '');
 
-    var lotPlanUrls = (rec['Lot Plan'] || '').split('\\n').filter(Boolean).slice(0, 2);
+    var lotPlanUrls = (rec['Lot Plan'] || '').split('\\n').filter(Boolean).slice(0, 3);
     var lotPlanBtnsHtml = lotPlanUrls.length
       ? '<div class="lotplan-btns">' + lotPlanUrls.map(function (u, i) {
           return '<button type="button" class="lotplan-btn" data-action="view-img" data-url="' + escapeHtml(u) + '">View Lot Plan ' + (i + 1) + '</button>';
@@ -1423,32 +1516,34 @@ const HTML_PAGE = `<!DOCTYPE html>
           '<h3>' + escapeHtml(rec['Address'] || 'No address') + '</h3>' +
           '<div class="address">No. ' + escapeHtml(rec['No']) + '</div>' +
           '<div class="info-grid">' + infoItemsHtml + remarksHtml + '</div>' +
+          picBtnsHtml +
           lotPlanBtnsHtml +
           '<a class="map-link' + (mapLinkHref ? '' : ' disabled') + '" href="' + escapeHtml(mapLinkHref) + '" target="_blank" rel="noopener">Open in Google Maps</a>' +
         '</div>' +
       '</div>' +
       '<div class="card-map">' + mapHtml + '</div>';
 
-    var photoImg = document.getElementById('carousel-photo-img');
+    var photoImg = cardEl.querySelector('.carousel-photo-img');
     if (photoImg) {
       photoImg.addEventListener('error', function () {
         photoImg.style.display = 'none';
-        var fallback = document.getElementById('carousel-no-photo');
+        var fallback = cardEl.querySelector('.carousel-no-photo');
         if (fallback) fallback.style.display = 'block';
       });
     }
   }
 
-  document.getElementById('btn-prev').addEventListener('click', function () {
-    currentIndex -= 1;
-    renderCarousel();
-  });
-  document.getElementById('btn-next').addEventListener('click', function () {
-    currentIndex += 1;
-    renderCarousel();
-  });
-  document.getElementById('carousel-edit-btn').addEventListener('click', function () {
-    if (data.length && data[currentIndex]) openForm(data[currentIndex]);
+  document.addEventListener('click', function (e) {
+    var prev = e.target.closest('.carousel-prev');
+    var next = e.target.closest('.carousel-next');
+    var edit = e.target.closest('.carousel-edit-btn');
+    if (prev) { var k = prev.getAttribute('data-carousel'); CAROUSELS[k].index -= 1; renderCarousel(k); }
+    else if (next) { var k2 = next.getAttribute('data-carousel'); CAROUSELS[k2].index += 1; renderCarousel(k2); }
+    else if (edit) {
+      var k3 = edit.getAttribute('data-carousel');
+      var rows = filteredFor(k3);
+      if (rows[CAROUSELS[k3].index]) openForm(rows[CAROUSELS[k3].index]);
+    }
   });
 
   fetch('/api/me')
