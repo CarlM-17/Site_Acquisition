@@ -23,9 +23,9 @@ const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 const COLUMNS = [
   'No', 'Address', 'Google Map Link', 'Picture', 'Size', 'Rate',
   'Lease Term', 'Lease Type', 'Frontage', 'Store Format', 'Nearest PG',
-  'Competitors', 'Visited', 'Lot Plan', 'Status', 'Remarks', 'Update'
+  'Competitors', 'Visited', 'Lot Plan', 'Status', 'Remarks', 'Update', 'Term Sheet'
 ];
-const LAST_COL = 'Q';
+const LAST_COL = 'R';
 const ADMIN_ONLY_FIELDS = ['Visited', 'Status'];
 
 let cachedSheetGid = null;
@@ -341,6 +341,11 @@ app.get('/api/data', requireAuth, async (req, res) => {
           .filter(Boolean)
           .join('\n');
         rec['Lot Plan'] = rec['Lot Plan']
+          .split('\n')
+          .map((u) => driveDirectUrl(u.trim()))
+          .filter(Boolean)
+          .join('\n');
+        rec['Term Sheet'] = rec['Term Sheet']
           .split('\n')
           .map((u) => driveDirectUrl(u.trim()))
           .filter(Boolean)
@@ -1020,16 +1025,73 @@ const HTML_PAGE = `<!DOCTYPE html>
         <img id="image-viewer-img" alt="Photo" />
       </div>
     </div>
+
+    <div class="overlay hidden" id="ts-overlay">
+      <div class="modal">
+        <h3 id="ts-title">Term Sheet</h3>
+        <div class="form-grid">
+          <div class="form-item full">
+            <label>Term Sheet (up to 3 photos)</label>
+            <div class="picture-slot">
+              <div class="picture-slot-label">Photo 1</div>
+              <div class="picture-input">
+                <img class="picture-preview" id="ts1-preview" />
+                <input id="ts1-url" type="text" placeholder="Paste an image URL, or use a button below" />
+                <div class="picture-btns">
+                  <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="ts1-camera" hidden /></label>
+                  <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="ts1-file" hidden /></label>
+                  <button type="button" class="file-btn file-btn-remove" id="ts1-remove">Remove Photo</button>
+                </div>
+                <div class="picture-hint" id="ts1-hint"></div>
+              </div>
+            </div>
+            <div class="picture-slot">
+              <div class="picture-slot-label">Photo 2</div>
+              <div class="picture-input">
+                <img class="picture-preview" id="ts2-preview" />
+                <input id="ts2-url" type="text" placeholder="Paste an image URL, or use a button below" />
+                <div class="picture-btns">
+                  <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="ts2-camera" hidden /></label>
+                  <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="ts2-file" hidden /></label>
+                  <button type="button" class="file-btn file-btn-remove" id="ts2-remove">Remove Photo</button>
+                </div>
+                <div class="picture-hint" id="ts2-hint"></div>
+              </div>
+            </div>
+            <div class="picture-slot">
+              <div class="picture-slot-label">Photo 3</div>
+              <div class="picture-input">
+                <img class="picture-preview" id="ts3-preview" />
+                <input id="ts3-url" type="text" placeholder="Paste an image URL, or use a button below" />
+                <div class="picture-btns">
+                  <label class="file-btn">Take Photo<input type="file" accept="image/*" capture="environment" id="ts3-camera" hidden /></label>
+                  <label class="file-btn">Choose from Storage<input type="file" accept="image/*" id="ts3-file" hidden /></label>
+                  <button type="button" class="file-btn file-btn-remove" id="ts3-remove">Remove Photo</button>
+                </div>
+                <div class="picture-hint" id="ts3-hint"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="form-error" id="ts-error"></div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="ts-cancel">Cancel</button>
+          <button type="button" class="btn btn-primary" id="ts-save">Save</button>
+        </div>
+      </div>
+    </div>
   </div>
 
 <script>
 (function () {
-  var COLUMNS = ['No','Address','Google Map Link','Picture','Size','Rate','Lease Term','Lease Type','Frontage','Store Format','Nearest PG','Competitors','Visited','Lot Plan','Status','Remarks','Update'];
+  var COLUMNS = ['No','Address','Google Map Link','Picture','Size','Rate','Lease Term','Lease Type','Frontage','Store Format','Nearest PG','Competitors','Visited','Lot Plan','Status','Remarks','Update','Term Sheet'];
   var ADMIN_ONLY_FIELDS = ['Visited', 'Status'];
   var PIC_SLOTS = ['pic1', 'pic2', 'pic3'];
   var LOT_SLOTS = ['lot1', 'lot2', 'lot3'];
+  var TS_SLOTS = ['ts1', 'ts2', 'ts3'];
   var data = [];
   var editingRow = null;
+  var editingRec = null;
   var currentUser = null;
 
   // Three status-filtered carousels, each with its own position.
@@ -1185,7 +1247,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           if (v === 'no') return '<td><span class="badge badge-no">No</span></td>';
           return '<td></td>';
         }
-        if (col === 'Picture' || col === 'Lot Plan') {
+        if (col === 'Picture' || col === 'Lot Plan' || col === 'Term Sheet') {
           var photos = (rec[col] || '').split('\\n').filter(Boolean);
           return '<td>' + photos.map(function (u, i) {
             return '<button type="button" class="link-btn" data-action="view-img" data-url="' + escapeHtml(u) + '">photo ' + (i + 1) + '</button>';
@@ -1271,6 +1333,7 @@ const HTML_PAGE = `<!DOCTYPE html>
   function openForm(rec) {
     if (isVisitor()) return;
     editingRow = rec ? rec._row : null;
+    editingRec = rec || null;
     document.getElementById('form-title').textContent = rec ? 'Edit Site' : 'Add Site';
     document.getElementById('form-error').style.display = 'none';
     var form = document.getElementById('site-form');
@@ -1324,7 +1387,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     }
   }
 
-  PIC_SLOTS.concat(LOT_SLOTS).forEach(function (p) {
+  PIC_SLOTS.concat(LOT_SLOTS).concat(TS_SLOTS).forEach(function (p) {
     document.getElementById(p + '-url').addEventListener('input', function (e) {
       updatePicturePreview(p + '-preview', e.target.value);
     });
@@ -1397,6 +1460,60 @@ const HTML_PAGE = `<!DOCTYPE html>
   }
   PIC_SLOTS.forEach(function (p, i) { wireSlot(p, 'Picture Photo ' + (i + 1)); });
   LOT_SLOTS.forEach(function (p, i) { wireSlot(p, 'Lot Plan Photo ' + (i + 1)); });
+  TS_SLOTS.forEach(function (p, i) { wireSlot(p, 'Term Sheet Photo ' + (i + 1)); });
+
+  // ---- Term Sheet modal (Approved sites, editors only) ----
+  var tsRec = null;
+  function openTermSheet(rec) {
+    if (isVisitor() || !rec) return;
+    tsRec = rec;
+    document.getElementById('ts-title').textContent = 'Term Sheet — Site #' + (rec['No'] || '');
+    document.getElementById('ts-error').style.display = 'none';
+    var parts = (rec['Term Sheet'] || '').split('\\n').filter(Boolean);
+    TS_SLOTS.forEach(function (p, i) {
+      document.getElementById(p + '-url').value = parts[i] || '';
+      updatePicturePreview(p + '-preview', parts[i] || '');
+      document.getElementById(p + '-hint').textContent = '';
+    });
+    document.getElementById('ts-overlay').classList.remove('hidden');
+  }
+  document.getElementById('ts-cancel').addEventListener('click', function () {
+    document.getElementById('ts-overlay').classList.add('hidden');
+  });
+  document.getElementById('ts-save').addEventListener('click', function () {
+    if (!tsRec) return;
+    var record = {};
+    COLUMNS.forEach(function (col) { record[col] = tsRec[col] || ''; });
+    record['Term Sheet'] = TS_SLOTS.map(function (p) { return document.getElementById(p + '-url').value; })
+      .filter(Boolean).join('\\n');
+    var errorEl = document.getElementById('ts-error');
+    errorEl.style.display = 'none';
+    var saveBtn = document.getElementById('ts-save');
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving...';
+    fetch('/api/data/' + tsRec._row, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(record),
+    })
+      .then(function (r) {
+        if (r.status === 401) { showLogin(); throw new Error('Session expired'); }
+        if (!r.ok) return r.json().then(function (e) { throw new Error(e.error || 'Save failed'); });
+        return r.json();
+      })
+      .then(function () {
+        document.getElementById('ts-overlay').classList.add('hidden');
+        return loadData();
+      })
+      .catch(function (err) {
+        errorEl.textContent = err.message;
+        errorEl.style.display = 'block';
+      })
+      .finally(function () {
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save';
+      });
+  });
 
   function deleteRecord(row) {
     if (!confirm('Delete this site record? This cannot be undone.')) return;
@@ -1421,6 +1538,8 @@ const HTML_PAGE = `<!DOCTYPE html>
       .filter(Boolean).join('\\n');
     record['Lot Plan'] = LOT_SLOTS.map(function (p) { return document.getElementById(p + '-url').value; })
       .filter(Boolean).join('\\n');
+    // Term Sheet isn't in this form; preserve the existing value so saving doesn't wipe it.
+    record['Term Sheet'] = editingRec ? (editingRec['Term Sheet'] || '') : '';
 
     var errorEl = document.getElementById('form-error');
     errorEl.style.display = 'none';
@@ -1545,6 +1664,20 @@ const HTML_PAGE = `<!DOCTYPE html>
         }).join('') + '</div>'
       : '';
 
+    // Term Sheet: only on the Approved carousel. View buttons for everyone; upload button for editors.
+    var termSheetHtml = '';
+    if (key === 'approved') {
+      var tsUrls = (rec['Term Sheet'] || '').split('\\n').filter(Boolean).slice(0, 3);
+      var tsViewBtns = tsUrls.map(function (u, i) {
+        return '<button type="button" class="lotplan-btn" data-action="view-img" data-url="' + escapeHtml(u) + '">View Term Sheet ' + (i + 1) + '</button>';
+      }).join('');
+      var tsUploadBtn = isVisitor() ? '' :
+        '<button type="button" class="lotplan-btn ts-upload-btn" data-ts-row="' + rec._row + '">' + (tsUrls.length ? 'Edit Term Sheet' : 'Upload Term Sheet') + '</button>';
+      if (tsViewBtns || tsUploadBtn) {
+        termSheetHtml = '<div class="lotplan-btns">' + tsViewBtns + tsUploadBtn + '</div>';
+      }
+    }
+
     cardEl.innerHTML =
       '<div class="card-top">' +
         '<div class="card-photo">' + photoHtml + noPhotoFallback + '</div>' +
@@ -1554,6 +1687,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           '<div class="info-grid">' + infoItemsHtml + remarksHtml + '</div>' +
           picBtnsHtml +
           lotPlanBtnsHtml +
+          termSheetHtml +
           '<a class="map-link' + (mapLinkHref ? '' : ' disabled') + '" href="' + escapeHtml(mapLinkHref) + '" target="_blank" rel="noopener">Open in Google Maps</a>' +
         '</div>' +
       '</div>' +
@@ -1573,12 +1707,18 @@ const HTML_PAGE = `<!DOCTYPE html>
     var prev = e.target.closest('.carousel-prev');
     var next = e.target.closest('.carousel-next');
     var edit = e.target.closest('.carousel-edit-btn');
+    var tsBtn = e.target.closest('.ts-upload-btn');
     if (prev) { var k = prev.getAttribute('data-carousel'); CAROUSELS[k].index -= 1; renderCarousel(k); }
     else if (next) { var k2 = next.getAttribute('data-carousel'); CAROUSELS[k2].index += 1; renderCarousel(k2); }
     else if (edit) {
       var k3 = edit.getAttribute('data-carousel');
       var rows = filteredFor(k3);
       if (rows[CAROUSELS[k3].index]) openForm(rows[CAROUSELS[k3].index]);
+    }
+    else if (tsBtn) {
+      var row = parseInt(tsBtn.getAttribute('data-ts-row'), 10);
+      var rec = data.find(function (d) { return d._row === row; });
+      if (rec) openTermSheet(rec);
     }
   });
 
