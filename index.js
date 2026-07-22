@@ -1036,7 +1036,12 @@ const HTML_PAGE = `<!DOCTYPE html>
   var CAROUSELS = {
     approval: {
       index: 0,
-      filter: function (r) { var s = (r['Status'] || '').trim().toLowerCase(); return s === '' || s === 'pending'; },
+      filter: function (r) {
+        var s = (r['Status'] || '').trim().toLowerCase();
+        // Visitors only see Pending here (never blank-status sites); others see Pending + blank.
+        if (isVisitor()) return s === 'pending';
+        return s === '' || s === 'pending';
+      },
     },
     approved: {
       index: 0,
