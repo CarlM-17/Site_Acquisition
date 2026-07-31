@@ -821,6 +821,8 @@ const HTML_PAGE = `<!DOCTYPE html>
     </header>
     <nav class="tabs">
       <button id="tab-btn-table" class="active" data-tab="table">Site Proposal Summary Table</button>
+      <button id="tab-btn-newsites" data-tab="newsites">New Sites to Visit</button>
+      <button id="tab-btn-potential" data-tab="potential">With Potential</button>
       <button id="tab-btn-approval" data-tab="approval">Site For Approval</button>
       <button id="tab-btn-approved" data-tab="approved">Approved</button>
       <button id="tab-btn-disapproved" data-tab="disapproved">Disapproved</button>
@@ -837,6 +839,36 @@ const HTML_PAGE = `<!DOCTYPE html>
             <tbody id="table-body"><tr><td class="status-msg">Loading...</td></tr></tbody>
           </table>
         </div>
+      </section>
+
+      <section id="panel-newsites" class="panel">
+        <div class="carousel-head">
+          <div class="carousel-head-left">
+            <h2 id="newsites-title">Site</h2>
+            <button class="btn btn-secondary btn-sm carousel-edit-btn" data-carousel="newsites" style="display:none">Edit</button>
+          </div>
+          <div class="nav-btns">
+            <button class="carousel-prev" data-carousel="newsites">&#8592; Prev</button>
+            <span class="counter" id="newsites-counter">0 / 0</span>
+            <button class="carousel-next" data-carousel="newsites">Next &#8594;</button>
+          </div>
+        </div>
+        <div class="card" id="newsites-card"><div class="status-msg">Loading...</div></div>
+      </section>
+
+      <section id="panel-potential" class="panel">
+        <div class="carousel-head">
+          <div class="carousel-head-left">
+            <h2 id="potential-title">Site</h2>
+            <button class="btn btn-secondary btn-sm carousel-edit-btn" data-carousel="potential" style="display:none">Edit</button>
+          </div>
+          <div class="nav-btns">
+            <button class="carousel-prev" data-carousel="potential">&#8592; Prev</button>
+            <span class="counter" id="potential-counter">0 / 0</span>
+            <button class="carousel-next" data-carousel="potential">Next &#8594;</button>
+          </div>
+        </div>
+        <div class="card" id="potential-card"><div class="status-msg">Loading...</div></div>
       </section>
 
       <section id="panel-approval" class="panel">
@@ -998,9 +1030,11 @@ const HTML_PAGE = `<!DOCTYPE html>
               <label>Status</label>
               <select name="Status">
                 <option value="">-</option>
+                <option value="With Potential">With Potential</option>
+                <option value="For Approval">For Approval</option>
+                <option value="Pending">Pending</option>
                 <option value="Approved">Approved</option>
                 <option value="Disapproved">Disapproved</option>
-                <option value="Pending">Pending</option>
               </select>
               <div class="lock-hint" id="status-lock-hint"></div>
             </div>
@@ -1094,15 +1128,22 @@ const HTML_PAGE = `<!DOCTYPE html>
   var editingRec = null;
   var currentUser = null;
 
-  // Three status-filtered carousels, each with its own position.
+  // Status-filtered carousels, each with its own position. Order matters for tab landing.
   var CAROUSELS = {
+    newsites: {
+      index: 0,
+      // Newly added sites have no status yet.
+      filter: function (r) { return (r['Status'] || '').trim() === ''; },
+    },
+    potential: {
+      index: 0,
+      filter: function (r) { return (r['Status'] || '').trim().toLowerCase() === 'with potential'; },
+    },
     approval: {
       index: 0,
       filter: function (r) {
         var s = (r['Status'] || '').trim().toLowerCase();
-        // Visitors only see Pending here (never blank-status sites); others see Pending + blank.
-        if (isVisitor()) return s === 'pending';
-        return s === '' || s === 'pending';
+        return s === 'for approval' || s === 'pending';
       },
     },
     approved: {
@@ -1136,12 +1177,13 @@ const HTML_PAGE = `<!DOCTYPE html>
     loadData();
   }
 
-  // Visitors get a read-only view: no Summary Table tab, no Add/Edit buttons.
+  // Visitors get a read-only view: no Summary Table, no New Sites to Visit, no Add/Edit buttons.
   function applyRoleUI() {
     var visitor = isVisitor();
     document.getElementById('tab-btn-table').style.display = visitor ? 'none' : '';
+    document.getElementById('tab-btn-newsites').style.display = visitor ? 'none' : '';
     document.getElementById('btn-add-site').style.display = visitor ? 'none' : '';
-    if (visitor) switchTab('approval');
+    if (visitor) switchTab('potential');
   }
 
   function showLogin() {
@@ -1183,7 +1225,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     fetch('/api/logout', { method: 'POST' }).finally(function () { showLogin(); });
   });
 
-  var TABS = ['table', 'approval', 'approved', 'disapproved'];
+  var TABS = ['table', 'newsites', 'potential', 'approval', 'approved', 'disapproved'];
   TABS.forEach(function (name) {
     document.getElementById('tab-btn-' + name).addEventListener('click', function () { switchTab(name); });
   });
