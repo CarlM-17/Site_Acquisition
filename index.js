@@ -687,7 +687,7 @@ const HTML_PAGE = `<!DOCTYPE html>
   .info-item label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 2px; }
   .info-item div.val { font-size: 14px; }
   .info-item.full { grid-column: 1 / -1; }
-  .info-item.highlight-field { background: #fff9c4; border: 1px solid #f5e79e; border-radius: 6px; padding: 8px 10px; }
+  .info-item.highlight-field { background: #ffe97a; border: 1px solid #f0d24e; border-radius: 6px; padding: 8px 10px; }
   .map-link {
     display: inline-block;
     margin-top: 16px;
