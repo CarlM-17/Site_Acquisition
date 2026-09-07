@@ -687,6 +687,7 @@ const HTML_PAGE = `<!DOCTYPE html>
   .info-item label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 2px; }
   .info-item div.val { font-size: 14px; }
   .info-item.full { grid-column: 1 / -1; }
+  .info-item.highlight-field { background: #fff9c4; border: 1px solid #f5e79e; border-radius: 6px; padding: 8px 10px; }
   .map-link {
     display: inline-block;
     margin-top: 16px;
@@ -1689,8 +1690,8 @@ const HTML_PAGE = `<!DOCTYPE html>
       return '<div class="info-item"><label>' + escapeHtml(f) + '</label><div class="val">' + (escapeHtml(rec[f]) || '&mdash;') + '</div></div>';
     }).join('') + '<div class="info-item"><label>Visited</label><div class="val">' + (visitedBadge || '&mdash;') + '</div></div>';
 
-    var remarksHtml = '<div class="info-item full"><label>Remarks</label><div class="val">' + (escapeHtml(rec['Remarks']) || '&mdash;') + '</div></div>' +
-      '<div class="info-item full"><label>Update</label><div class="val">' + (escapeHtml(rec['Update']) || '&mdash;') + '</div></div>';
+    var remarksHtml = '<div class="info-item full highlight-field"><label>Remarks</label><div class="val">' + (escapeHtml(rec['Remarks']) || '&mdash;') + '</div></div>' +
+      '<div class="info-item full highlight-field"><label>Update</label><div class="val">' + (escapeHtml(rec['Update']) || '&mdash;') + '</div></div>';
 
     var mapSrc = mapEmbedSrc(rec);
     var mapHtml = mapSrc
