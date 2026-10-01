@@ -1,6 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const https = require('https');
+const zlib = require('zlib');
 const { google } = require('googleapis');
 
 const app = express();
@@ -27,6 +28,10 @@ const COLUMNS = [
 ];
 const LAST_COL = 'R';
 const ADMIN_ONLY_FIELDS = ['Visited', 'Status'];
+
+// Prepared from MapData.xlsx. Gzip keeps the single-file source compact.
+const MAP_DATA_GZIP_BASE64 = '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';
+const MAP_LOCATIONS = JSON.parse(zlib.gunzipSync(Buffer.from(MAP_DATA_GZIP_BASE64, 'base64')).toString('utf8'));
 
 let cachedSheetGid = null;
 const sessions = new Map();
@@ -320,6 +325,11 @@ app.get('/api/me', requireAuth, (req, res) => {
   res.json({ userName: req.session.userName, level: req.session.level });
 });
 
+app.get('/api/map-data', requireAuth, (req, res) => {
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.json(MAP_LOCATIONS);
+});
+
 app.get('/api/data', requireAuth, async (req, res) => {
   try {
     const sheets = getSheetsClient();
@@ -516,6 +526,100 @@ app.get('/oauth/callback', requireAuth, async (req, res) => {
   }
 });
 
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const typeBuffer = Buffer.from(type, 'ascii');
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  const checksum = Buffer.alloc(4);
+  checksum.writeUInt32BE(crc32(Buffer.concat([typeBuffer, data])), 0);
+  return Buffer.concat([length, typeBuffer, data, checksum]);
+}
+
+function buildPwaIcon(size) {
+  const stride = size * 4 + 1;
+  const pixels = Buffer.alloc(stride * size);
+  for (let y = 0; y < size; y += 1) {
+    pixels[y * stride] = 0;
+    for (let x = 0; x < size; x += 1) {
+      const nx = x / size;
+      const ny = y / size;
+      const dx = nx - 0.5;
+      const dy = ny - 0.39;
+      const circle = dx * dx + dy * dy < 0.205 * 0.205;
+      const triangle = ny >= 0.42 && ny <= 0.82 && Math.abs(dx) < 0.18 * (1 - (ny - 0.42) / 0.40);
+      const inner = dx * dx + dy * dy < 0.082 * 0.082;
+      const offset = y * stride + 1 + x * 4;
+      const color = inner ? [250, 204, 21] : (circle || triangle ? [255, 255, 255] : [26, 93, 58]);
+      pixels[offset] = color[0];
+      pixels[offset + 1] = color[1];
+      pixels[offset + 2] = color[2];
+      pixels[offset + 3] = 255;
+    }
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(size, 0);
+  header.writeUInt32BE(size, 4);
+  header[8] = 8;
+  header[9] = 6;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', zlib.deflateSync(pixels, { level: 9 })),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+const PWA_ICONS = { 192: buildPwaIcon(192), 512: buildPwaIcon(512) };
+
+app.get('/manifest.webmanifest', (req, res) => {
+  res.type('application/manifest+json').send({
+    name: 'CaMaNaVa Site Acquisition',
+    short_name: 'CaMaNaVa Sites',
+    description: 'Site acquisition tracker and satellite store map',
+    start_url: '/',
+    display: 'standalone',
+    background_color: '#f5f7f8',
+    theme_color: '#1a5d3a',
+    icons: [
+      { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
+      { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+    ],
+  });
+});
+
+app.get('/icon-:size.png', (req, res) => {
+  const icon = PWA_ICONS[Number(req.params.size)];
+  if (!icon) return res.status(404).end();
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.type('png').send(icon);
+});
+
+app.get('/sw.js', (req, res) => {
+  res.type('application/javascript').send(`
+const CACHE = 'camanava-shell-v1';
+const SHELL = ['/', '/manifest.webmanifest', '/icon-192.png', '/icon-512.png'];
+self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting())));
+self.addEventListener('activate', event => event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim())));
+self.addEventListener('fetch', event => {
+  if (event.request.method !== 'GET' || new URL(event.request.url).origin !== location.origin || new URL(event.request.url).pathname.startsWith('/api/')) return;
+  if (event.request.mode === 'navigate') {
+    event.respondWith(fetch(event.request).then(response => { const copy = response.clone(); caches.open(CACHE).then(cache => cache.put('/', copy)); return response; }).catch(() => caches.match('/')));
+    return;
+  }
+  event.respondWith(caches.match(event.request).then(cached => cached || fetch(event.request)));
+});
+  `);
+});
+
 app.get('/', (req, res) => {
   res.type('html').send(HTML_PAGE);
 });
@@ -529,6 +633,13 @@ const HTML_PAGE = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#1a5d3a" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="apple-touch-icon" href="/icon-192.png" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
 <title>CaMaNaVa Site Acquisition</title>
 <style>
   :root {
@@ -569,6 +680,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     background: #fff;
     border-bottom: 1px solid var(--border);
     padding: 0 24px;
+    overflow-x: auto;
   }
   nav.tabs button {
     border: none;
@@ -728,6 +840,41 @@ const HTML_PAGE = `<!DOCTYPE html>
   .card-map .no-map { padding: 20px 24px; color: var(--muted); font-size: 14px; }
   .status-msg { padding: 40px; text-align: center; color: var(--muted); }
 
+  /* Satellite map */
+  .map-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+  .map-heading h2 { margin: 0 0 4px; font-size: 20px; }
+  .map-heading p { margin: 0; color: var(--muted); font-size: 13px; }
+  .map-counts { display: flex; flex-wrap: wrap; gap: 8px; }
+  .map-count { background: #fff; border: 1px solid var(--border); border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 600; }
+  .map-count strong { margin-right: 4px; }
+  .map-tools {
+    display: grid; grid-template-columns: minmax(190px, 2fr) repeat(3, minmax(130px, 1fr)) auto;
+    gap: 10px; margin-bottom: 12px; padding: 12px; background: #fff; border: 1px solid var(--border); border-radius: 10px;
+  }
+  .map-tools input, .map-tools select {
+    width: 100%; min-height: 40px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 7px;
+    background: #fff; color: var(--text); font: inherit;
+  }
+  .map-layout { display: grid; grid-template-columns: minmax(260px, 330px) minmax(0, 1fr); min-height: 620px; }
+  .map-sidebar { background: #fff; border: 1px solid var(--border); border-right: 0; border-radius: 10px 0 0 10px; overflow: hidden; display: flex; flex-direction: column; }
+  .map-list-summary { padding: 11px 13px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+  .map-results { overflow-y: auto; flex: 1; max-height: 620px; }
+  .map-result { width: 100%; border: 0; border-bottom: 1px solid #e8ecee; background: #fff; padding: 12px 13px; text-align: left; cursor: pointer; font-family: inherit; }
+  .map-result:hover, .map-result:focus-visible { background: #f0f7f3; outline: none; }
+  .map-result-name { display: block; font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+  .map-result-meta { display: block; font-size: 11px; color: var(--muted); line-height: 1.35; }
+  #satellite-map { min-height: 620px; border: 1px solid var(--border); border-radius: 0 10px 10px 0; background: #dfe7e2; }
+  .map-dot { width: 18px; height: 18px; border: 3px solid #fff; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); box-shadow: 0 1px 5px rgba(0,0,0,.45); }
+  .map-dot-puregold { background: #16a34a; }
+  .map-dot-competitor { background: #dc2626; }
+  .map-dot-proposed { background: #f59e0b; }
+  .map-popup { min-width: 220px; }
+  .map-popup h3 { margin: 0 0 5px; font-size: 15px; color: var(--primary); }
+  .map-popup p { margin: 4px 0; font-size: 12px; line-height: 1.4; }
+  .map-popup .map-link { margin-top: 8px; }
+  .map-legend { background: rgba(255,255,255,.95); padding: 8px 10px; border-radius: 7px; box-shadow: 0 1px 5px rgba(0,0,0,.25); font-size: 12px; line-height: 1.8; }
+  .legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+
   /* Form modal */
   .overlay {
     position: fixed; inset: 0; background: rgba(0,0,0,0.45);
@@ -790,6 +937,13 @@ const HTML_PAGE = `<!DOCTYPE html>
     .modal { max-width: 100%; min-height: 100vh; border-radius: 0; padding: 16px; margin-bottom: 0; }
     .form-grid { grid-template-columns: 1fr; }
     .form-item input, .form-item select, .form-item textarea { font-size: 16px; }
+    .map-heading { align-items: flex-start; flex-direction: column; }
+    .map-tools { grid-template-columns: 1fr 1fr; }
+    .map-tools .map-search { grid-column: 1 / -1; }
+    .map-layout { display: flex; flex-direction: column-reverse; min-height: 0; }
+    #satellite-map { min-height: 52vh; border-radius: 10px 10px 0 0; }
+    .map-sidebar { border-right: 1px solid var(--border); border-top: 0; border-radius: 0 0 10px 10px; }
+    .map-results { max-height: 260px; }
   }
 </style>
 </head>
@@ -827,6 +981,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       <button id="tab-btn-approval" data-tab="approval">Site For Approval</button>
       <button id="tab-btn-approved" data-tab="approved">Approved</button>
       <button id="tab-btn-disapproved" data-tab="disapproved">Disapproved</button>
+      <button id="tab-btn-map" data-tab="map">Satellite Map</button>
     </nav>
     <main>
       <section id="panel-table" class="panel active">
@@ -915,6 +1070,40 @@ const HTML_PAGE = `<!DOCTYPE html>
           </div>
         </div>
         <div class="card" id="disapproved-card"><div class="status-msg">Loading...</div></div>
+      </section>
+
+      <section id="panel-map" class="panel">
+        <div class="map-heading">
+          <div>
+            <h2>Store Network Satellite Map</h2>
+            <p>Puregold network, nearby competitors, and proposed trade areas from MapData.xlsx</p>
+          </div>
+          <div class="map-counts" aria-live="polite">
+            <span class="map-count"><strong id="map-count-visible">0</strong>visible</span>
+            <span class="map-count"><strong id="map-count-puregold">0</strong>Puregold</span>
+            <span class="map-count"><strong id="map-count-competitor">0</strong>competitors</span>
+            <span class="map-count"><strong id="map-count-proposed">0</strong>proposed</span>
+          </div>
+        </div>
+        <div class="map-tools" aria-label="Map filters">
+          <input class="map-search" id="map-search" type="search" placeholder="Search store, area, address, or format" aria-label="Search map locations" />
+          <select id="map-category" aria-label="Location category">
+            <option value="">All categories</option>
+            <option value="puregold">Puregold network</option>
+            <option value="competitor">Competitors</option>
+            <option value="proposed">Proposed sites</option>
+          </select>
+          <select id="map-area" aria-label="Area"><option value="">All areas</option></select>
+          <select id="map-type" aria-label="Store or site type"><option value="">All formats</option></select>
+          <button type="button" class="btn btn-secondary" id="map-fit">Fit Results</button>
+        </div>
+        <div class="map-layout">
+          <aside class="map-sidebar">
+            <div class="map-list-summary" id="map-list-summary">Loading locations...</div>
+            <div class="map-results" id="map-results"></div>
+          </aside>
+          <div id="satellite-map" role="application" aria-label="Satellite map of store and proposed site locations"></div>
+        </div>
       </section>
     </main>
 
@@ -1117,6 +1306,8 @@ const HTML_PAGE = `<!DOCTYPE html>
     </div>
   </div>
 
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 <script>
 (function () {
   var COLUMNS = ['No','Address','Google Map Link','Picture','Size','Rate','Lease Term','Lease Type','Frontage','Store Format','Nearest PG','Competitors','Visited','Lot Plan','Status','Remarks','Update','Term Sheet'];
@@ -1128,6 +1319,12 @@ const HTML_PAGE = `<!DOCTYPE html>
   var editingRow = null;
   var editingRec = null;
   var currentUser = null;
+  var mapLocations = [];
+  var satelliteMap = null;
+  var mapClusters = null;
+  var mapMarkersById = {};
+  var mapLoadingPromise = null;
+  var mapEventsWired = false;
 
   // Status-filtered carousels, each with its own position. Order matters for tab landing.
   var CAROUSELS = {
@@ -1226,7 +1423,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     fetch('/api/logout', { method: 'POST' }).finally(function () { showLogin(); });
   });
 
-  var TABS = ['table', 'newsites', 'potential', 'approval', 'approved', 'disapproved'];
+  var TABS = ['table', 'newsites', 'potential', 'approval', 'approved', 'disapproved', 'map'];
   TABS.forEach(function (name) {
     document.getElementById('tab-btn-' + name).addEventListener('click', function () { switchTab(name); });
   });
@@ -1236,13 +1433,174 @@ const HTML_PAGE = `<!DOCTYPE html>
       document.getElementById('tab-btn-' + t).classList.toggle('active', t === name);
       document.getElementById('panel-' + t).classList.toggle('active', t === name);
     });
-    if (name !== 'table') renderCarousel(name);
+    if (CAROUSELS[name]) renderCarousel(name);
+    if (name === 'map') initSatelliteMap();
   }
 
   function escapeHtml(str) {
     return String(str || '').replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
+  }
+
+  function categoryLabel(category) {
+    if (category === 'puregold') return 'Puregold network';
+    if (category === 'competitor') return 'Competitor';
+    return 'Proposed site';
+  }
+
+  function mapMarkerIcon(category) {
+    return L.divIcon({
+      className: '',
+      html: '<div class="map-dot map-dot-' + category + '"></div>',
+      iconSize: [24, 24],
+      iconAnchor: [10, 22],
+      popupAnchor: [2, -22],
+    });
+  }
+
+  function mapPopupHtml(location) {
+    var note = location.note ? '<p><strong>Why investigate:</strong> ' + escapeHtml(location.note) + '</p>' : '';
+    var priority = location.priority ? '<p><strong>Priority:</strong> ' + escapeHtml(location.priority) + '</p>' : '';
+    var mapLink = location.mapUrl
+      ? '<a class="map-link" href="' + escapeHtml(location.mapUrl) + '" target="_blank" rel="noopener">Open in Google Maps</a>'
+      : '';
+    return '<div class="map-popup">' +
+      '<h3>' + escapeHtml(location.name) + '</h3>' +
+      '<p><strong>' + escapeHtml(categoryLabel(location.category)) + '</strong> &middot; ' + escapeHtml(location.type) + '</p>' +
+      '<p>' + escapeHtml(location.address) + '</p>' + priority + note + mapLink + '</div>';
+  }
+
+  function populateMapFilters() {
+    var areas = Array.from(new Set(mapLocations.map(function (location) { return location.area; }).filter(Boolean))).sort();
+    var types = Array.from(new Set(mapLocations.map(function (location) { return location.type; }).filter(Boolean))).sort();
+    document.getElementById('map-area').innerHTML = '<option value="">All areas</option>' + areas.map(function (area) {
+      return '<option value="' + escapeHtml(area) + '">' + escapeHtml(area) + '</option>';
+    }).join('');
+    document.getElementById('map-type').innerHTML = '<option value="">All formats</option>' + types.map(function (type) {
+      return '<option value="' + escapeHtml(type) + '">' + escapeHtml(type) + '</option>';
+    }).join('');
+  }
+
+  function filteredMapLocations() {
+    var query = document.getElementById('map-search').value.trim().toLowerCase();
+    var category = document.getElementById('map-category').value;
+    var area = document.getElementById('map-area').value;
+    var type = document.getElementById('map-type').value;
+    return mapLocations.filter(function (location) {
+      if (category && location.category !== category) return false;
+      if (area && location.area !== area) return false;
+      if (type && location.type !== type) return false;
+      if (!query) return true;
+      var haystack = [location.name, location.area, location.type, location.address, location.note, location.priority].join(' ').toLowerCase();
+      return haystack.indexOf(query) !== -1;
+    });
+  }
+
+  function fitMapResults() {
+    if (!satelliteMap || !mapClusters || !mapClusters.getLayers().length) return;
+    satelliteMap.fitBounds(mapClusters.getBounds(), { padding: [28, 28], maxZoom: 16 });
+  }
+
+  function renderSatelliteMap(shouldFit) {
+    if (!satelliteMap || !mapClusters) return;
+    var locations = filteredMapLocations();
+    mapClusters.clearLayers();
+    mapMarkersById = {};
+    locations.forEach(function (location) {
+      var marker = L.marker([location.lat, location.lng], { icon: mapMarkerIcon(location.category), title: location.name });
+      marker.bindPopup(mapPopupHtml(location), { maxWidth: 340 });
+      mapMarkersById[location.id] = marker;
+      mapClusters.addLayer(marker);
+    });
+    var counts = { puregold: 0, competitor: 0, proposed: 0 };
+    locations.forEach(function (location) { counts[location.category] += 1; });
+    document.getElementById('map-count-visible').textContent = locations.length;
+    document.getElementById('map-count-puregold').textContent = counts.puregold;
+    document.getElementById('map-count-competitor').textContent = counts.competitor;
+    document.getElementById('map-count-proposed').textContent = counts.proposed;
+    document.getElementById('map-list-summary').textContent = locations.length + ' of ' + mapLocations.length + ' locations shown';
+    document.getElementById('map-results').innerHTML = locations.length ? locations.map(function (location) {
+      var details = categoryLabel(location.category) + ' · ' + location.type + ' · ' + location.area;
+      return '<button type="button" class="map-result" data-map-id="' + escapeHtml(location.id) + '">' +
+        '<span class="map-result-name">' + escapeHtml(location.name) + '</span>' +
+        '<span class="map-result-meta">' + escapeHtml(details) + '</span></button>';
+    }).join('') : '<div class="status-msg">No locations match these filters.</div>';
+    if (shouldFit) {
+      setTimeout(function () {
+        satelliteMap.invalidateSize();
+        fitMapResults();
+      }, 80);
+    }
+  }
+
+  function wireMapEvents() {
+    if (mapEventsWired) return;
+    mapEventsWired = true;
+    ['map-search', 'map-category', 'map-area', 'map-type'].forEach(function (id) {
+      var eventName = id === 'map-search' ? 'input' : 'change';
+      document.getElementById(id).addEventListener(eventName, function () { renderSatelliteMap(false); });
+    });
+    document.getElementById('map-fit').addEventListener('click', fitMapResults);
+    document.getElementById('map-results').addEventListener('click', function (event) {
+      var button = event.target.closest('[data-map-id]');
+      if (!button) return;
+      var marker = mapMarkersById[button.getAttribute('data-map-id')];
+      if (!marker) return;
+      mapClusters.zoomToShowLayer(marker, function () {
+        satelliteMap.panTo(marker.getLatLng());
+        marker.openPopup();
+      });
+    });
+  }
+
+  function initSatelliteMap() {
+    if (satelliteMap) {
+      setTimeout(function () { satelliteMap.invalidateSize(); }, 0);
+      return mapLoadingPromise;
+    }
+    if (typeof L === 'undefined') {
+      document.getElementById('map-list-summary').textContent = 'Map library could not load. Check the internet connection and refresh.';
+      return Promise.resolve();
+    }
+    satelliteMap = L.map('satellite-map', { zoomControl: true, preferCanvas: true }).setView([14.706, 120.995], 12);
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19,
+      attribution: 'Imagery &copy; Esri and contributors',
+    }).addTo(satelliteMap);
+    L.tileLayer('https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19,
+      pane: 'overlayPane',
+      opacity: 0.9,
+    }).addTo(satelliteMap);
+    mapClusters = L.markerClusterGroup({ showCoverageOnHover: false, maxClusterRadius: 45, disableClusteringAtZoom: 17 });
+    satelliteMap.addLayer(mapClusters);
+    var legend = L.control({ position: 'bottomright' });
+    legend.onAdd = function () {
+      var div = L.DomUtil.create('div', 'map-legend');
+      div.innerHTML = '<div><span class="legend-swatch" style="background:#16a34a"></span>Puregold</div>' +
+        '<div><span class="legend-swatch" style="background:#dc2626"></span>Competitor</div>' +
+        '<div><span class="legend-swatch" style="background:#f59e0b"></span>Proposed site</div>';
+      return div;
+    };
+    legend.addTo(satelliteMap);
+    wireMapEvents();
+    mapLoadingPromise = fetch('/api/map-data')
+      .then(function (response) {
+        if (response.status === 401) { showLogin(); throw new Error('Session expired'); }
+        if (!response.ok) throw new Error('Map data request failed');
+        return response.json();
+      })
+      .then(function (locations) {
+        mapLocations = locations;
+        populateMapFilters();
+        renderSatelliteMap(true);
+      })
+      .catch(function (error) {
+        document.getElementById('map-list-summary').textContent = 'Failed to load locations: ' + error.message;
+      });
+    setTimeout(function () { satelliteMap.invalidateSize(); }, 0);
+    return mapLoadingPromise;
   }
 
   function loadData() {
@@ -1764,6 +2122,12 @@ const HTML_PAGE = `<!DOCTYPE html>
       if (rec) openTermSheet(rec);
     }
   });
+
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('/sw.js').catch(function () { /* App remains usable without installation support. */ });
+    });
+  }
 
   fetch('/api/me')
     .then(function (r) { return r.ok ? r.json() : null; })
