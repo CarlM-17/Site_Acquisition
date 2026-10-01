@@ -328,9 +328,73 @@ app.get('/api/me', requireAuth, (req, res) => {
   res.json({ userName: req.session.userName, level: req.session.level });
 });
 
-app.get('/api/map-data', requireAuth, (req, res) => {
-  res.setHeader('Cache-Control', 'private, max-age=3600');
-  res.json(MAP_LOCATIONS);
+// Map sheets may have title/notes above their header row.
+const MAP_SHEET_ID = process.env.MAP_SHEET_ID || SHEET_ID;
+const MAP_SHEETS = [
+  { name: 'Puregold', category: 'puregold' },
+  { name: 'Competitors', category: 'competitor' },
+  { name: 'Proposed Site', category: 'proposed' },
+];
+const mapKey = value => String(value == null ? '' : value).trim().toLowerCase().replace(/\s+/g, ' ');
+function parseMapSheet(rows, spec) {
+  const headerIndex = rows.findIndex(row => row.some(cell => ['store name', 'proposed trade area', 'barangay'].includes(mapKey(cell))));
+  if (headerIndex < 0) {
+    if (!rows.some(row => row.some(cell => String(cell || '').trim()))) return [];
+    throw new Error('Missing Store Name / Proposed Trade Area header in ' + spec.name);
+  }
+  const headers = rows[headerIndex].map(mapKey);
+  return rows.slice(headerIndex + 1).flatMap((row, index) => {
+    const get = (...names) => {
+      for (const name of names) {
+        const column = headers.indexOf(mapKey(name));
+        if (column >= 0 && row[column] != null && String(row[column]).trim() !== '') return String(row[column]).trim();
+      }
+      return '';
+    };
+    const name = get('Store Name', 'Proposed Trade Area', 'Barangay');
+    if (!name) return [];
+    const record = {
+      id: spec.category + '-sheet-' + (headerIndex + index + 2), category: spec.category,
+      name, area: get('Area', 'City'), type: get('Format', 'Competitor', 'Suggested Format'),
+      address: get('Complete Address', 'Target Address / Search Area', 'Address'),
+      mapUrl: get('Google Maps Link', 'Google Map Link'),
+      note: get('Why it deserves investigation', 'Remarks'), priority: get('Priority'),
+      label: get('Barangay', 'Map Label'), lat: null, lng: null,
+    };
+    const lat = get('Latitude', 'Lat'), lng = get('Longitude', 'Lng', 'Lon');
+    const valid = (a, b) => Number.isFinite(a) && Number.isFinite(b) && Math.abs(a) <= 90 && Math.abs(b) <= 180;
+    if (lat && lng && valid(Number(lat), Number(lng))) {
+      record.lat = Number(lat); record.lng = Number(lng);
+    } else if (!lat && !lng) {
+      // Reuse prepared coordinates only while the location identity/address is unchanged.
+      const original = MAP_LOCATIONS.find(item => item.category === record.category &&
+        mapKey(item.name) === mapKey(name) && mapKey(item.area) === mapKey(record.area) &&
+        mapKey(item.address) === mapKey(record.address));
+      if (original) { record.lat = original.lat; record.lng = original.lng; }
+    }
+    if (!/^https?:\/\//i.test(record.mapUrl)) record.mapUrl = 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(name + ' ' + record.address);
+    return [record];
+  });
+}
+
+let mapSheetRequest = null;
+app.get('/api/map-data', requireAuth, async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    if (!mapSheetRequest) {
+      mapSheetRequest = getSheetsClient().spreadsheets.values.batchGet({
+        spreadsheetId: MAP_SHEET_ID,
+        ranges: MAP_SHEETS.map(spec => "'" + spec.name + "'!A:AZ"),
+      }).then(result => MAP_SHEETS.flatMap((spec, index) =>
+        parseMapSheet((result.data.valueRanges[index] || {}).values || [], spec)))
+        .finally(() => { mapSheetRequest = null; });
+    }
+    const locations = await mapSheetRequest;
+    res.json({ locations, updatedAt: new Date().toISOString() });
+  } catch (error) {
+    console.error('Map sheets:', error.message);
+    res.status(503).json({ error: 'Could not read the map sheets. Check spreadsheet access and the Puregold, Competitors, and Proposed Site tab names.' });
+  }
 });
 
 app.get('/api/map-boundaries', requireAuth, (req, res) => {
@@ -988,6 +1052,21 @@ const HTML_PAGE = `<!DOCTYPE html>
     #panel-map .btn { padding: 6px; font-size: 12px; }
     .leaflet-tooltip.store-map-label { font-size: 11px; max-width: 110px; }
   }
+
+  #panel-map .map-workspace { flex: 1; min-height: 0; display: flex; gap: 8px; }
+  #panel-map .map-tools { display: flex; flex-direction: column; flex: 0 0 205px; align-self: stretch; margin: 0; overflow-y: auto; gap: 8px; padding: 10px; }
+  #panel-map .map-tools strong { font-size: 13px; color: var(--primary); }
+  #panel-map .map-tools input, #panel-map .map-tools select { min-height: 34px; padding: 6px 8px; font-size: 12px; width: 100%; }
+  #panel-map .map-tools .btn { min-height: 34px; font-size: 12px; padding: 7px; }
+  #panel-map .map-canvas { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+  #map-sync-status { color: var(--muted); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+  #panel-map.map-expanded { position: fixed; inset: 0; z-index: 1000; padding: 10px; background: var(--bg); }
+  @media (max-width: 640px) {
+    #panel-map .map-tools { flex-basis: 142px; padding: 6px; gap: 6px; }
+    #panel-map .map-tools input, #panel-map .map-tools select { font-size: 12px; }
+    #panel-map .map-heading { flex-wrap: wrap; }
+    #panel-map .map-legend { font-size: 10px; padding: 5px; }
+  }
 </style>
 </head>
 <body>
@@ -1128,7 +1207,9 @@ const HTML_PAGE = `<!DOCTYPE html>
             <span class="map-count"><strong id="map-count-proposed">0</strong>proposed</span>
           </div>
         </div>
-        <div class="map-tools" aria-label="Map filters">
+        <div class="map-workspace">
+        <aside class="map-tools" aria-label="Map filters">
+          <strong>Map filters</strong>
           <input class="map-search" id="map-search" type="search" placeholder="Search store, area, address, or format" aria-label="Search map locations" />
           <select id="map-category" aria-label="Location category">
             <option value="">All categories</option>
@@ -1140,11 +1221,16 @@ const HTML_PAGE = `<!DOCTYPE html>
           <select id="map-type" aria-label="Store or site type"><option value="">All formats</option></select>
           <button type="button" class="btn btn-secondary" id="map-fit">Fit Results</button>
           <button type="button" class="btn btn-secondary" id="map-fullscreen">Full Screen</button>
-        </div>
+          <button type="button" class="btn btn-secondary" id="map-refresh">Refresh now</button>
+          <div id="map-sync-status" role="status" aria-live="polite">Connecting to Google Sheets…</div>
+        </aside>
+        <div class="map-canvas">
         <div id="map-list-summary" role="status" aria-live="polite">Loading locations...</div>
         <div class="map-layout">
 
           <div id="satellite-map" role="application" aria-label="Satellite map of store and proposed site locations"></div>
+        </div>
+        </div>
         </div>
       </section>
     </main>
@@ -1366,6 +1452,8 @@ const HTML_PAGE = `<!DOCTYPE html>
   var mapClusters = null;
   var mapMarkersById = {};
   var mapLoadingPromise = null;
+  var mapRefreshBusy = false;
+  var mapSnapshot = '';
   var mapEventsWired = false;
   var mapBoundaries = {};
   var mapBoundaryLayer = null;
@@ -1544,6 +1632,7 @@ const HTML_PAGE = `<!DOCTYPE html>
   }
 
   function mapLocationLabel(location) {
+    if (location.label) return location.label;
     if (location.category !== 'proposed') return location.name;
     var labels = {
       'Amparo / Brgy. 179': 'Amparo (Brgy. 179)',
@@ -1585,6 +1674,8 @@ const HTML_PAGE = `<!DOCTYPE html>
   }
 
   function populateMapFilters() {
+    var selectedArea = document.getElementById('map-area').value;
+    var selectedType = document.getElementById('map-type').value;
     var areas = Array.from(new Set(mapLocations.map(function (location) { return groupedMapArea(location.area); }).filter(Boolean))).sort();
     var types = Array.from(new Set(mapLocations.map(function (location) { return location.type; }).filter(Boolean))).sort();
     document.getElementById('map-area').innerHTML = '<option value="">All areas</option>' + areas.map(function (area) {
@@ -1593,6 +1684,8 @@ const HTML_PAGE = `<!DOCTYPE html>
     document.getElementById('map-type').innerHTML = '<option value="">All formats</option>' + types.map(function (type) {
       return '<option value="' + escapeHtml(type) + '">' + escapeHtml(type) + '</option>';
     }).join('');
+    if (areas.indexOf(selectedArea) !== -1) document.getElementById('map-area').value = selectedArea;
+    if (types.indexOf(selectedType) !== -1) document.getElementById('map-type').value = selectedType;
   }
 
   function filteredMapLocations() {
@@ -1625,6 +1718,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     mapClusters.clearLayers();
     mapMarkersById = {};
     locations.forEach(function (location) {
+      if (!Number.isFinite(location.lat) || !Number.isFinite(location.lng)) return;
       var marker = L.marker([location.lat, location.lng], { icon: mapMarkerIcon(location), title: location.name });
       marker.bindPopup(mapPopupHtml(location), { maxWidth: 340 });
       marker.bindTooltip(escapeHtml(mapLocationLabel(location)), {
@@ -1640,7 +1734,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     document.getElementById('map-count-puregold').textContent = counts.puregold;
     document.getElementById('map-count-competitor').textContent = counts.competitor;
     document.getElementById('map-count-proposed').textContent = counts.proposed;
-    document.getElementById('map-list-summary').textContent = locations.length + ' of ' + mapLocations.length + ' locations shown';
+    document.getElementById('map-list-summary').textContent = locations.length + ' of ' + mapLocations.length + ' results · ' + mapClusters.getLayers().length + ' mapped';
     mapBoundaryLayer.clearLayers();
     var selectedBoundary = mapBoundaries[document.getElementById('map-area').value];
     if (selectedBoundary) {
@@ -1664,22 +1758,67 @@ const HTML_PAGE = `<!DOCTYPE html>
       document.getElementById(id).addEventListener(eventName, function () { renderSatelliteMap(id === 'map-area'); });
     });
     document.getElementById('map-fit').addEventListener('click', fitMapResults);
+    document.getElementById('map-refresh').addEventListener('click', function () { refreshMapData(false); });
     document.getElementById('map-fullscreen').addEventListener('click', function () {
       var panel = document.getElementById('panel-map');
-      if (document.fullscreenElement) document.exitFullscreen();
-      else if (panel.requestFullscreen) panel.requestFullscreen().catch(function () {
-        document.getElementById('map-list-summary').textContent = 'Full screen is unavailable in this browser.';
-      });
+      var button = document.getElementById('map-fullscreen');
+      if (document.fullscreenElement) { document.exitFullscreen(); return; }
+      if (panel.classList.contains('map-expanded')) {
+        panel.classList.remove('map-expanded'); button.textContent = 'Full Screen';
+        satelliteMap.invalidateSize(); return;
+      }
+      function expand() { panel.classList.add('map-expanded'); button.textContent = 'Exit Full Screen'; satelliteMap.invalidateSize(); }
+      if (panel.requestFullscreen) panel.requestFullscreen().catch(expand);
+      else expand();
     });
     document.addEventListener('fullscreenchange', function () {
       document.getElementById('map-fullscreen').textContent = document.fullscreenElement ? 'Exit Full Screen' : 'Full Screen';
       setTimeout(function () { satelliteMap.invalidateSize(); }, 0);
     });
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') {
+        document.getElementById('panel-map').classList.remove('map-expanded');
+        document.getElementById('map-fullscreen').textContent = 'Full Screen';
+        satelliteMap.invalidateSize();
+      }
+    });
+  }
+
+  async function refreshMapData(firstLoad) {
+    if (mapRefreshBusy || !currentUser) return;
+    mapRefreshBusy = true;
+    var status = document.getElementById('map-sync-status');
+    var button = document.getElementById('map-refresh');
+    button.disabled = true;
+    status.textContent = 'Checking Google Sheets…';
+    try {
+      var response = await fetch('/api/map-data', { cache: 'no-store' });
+      if (response.status === 401) { showLogin(); throw new Error('Session expired. Sign in again.'); }
+      var payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Google Sheets is unavailable.');
+      if (!currentUser) return;
+      var snapshot = JSON.stringify(payload.locations);
+      if (snapshot !== mapSnapshot || firstLoad) {
+        mapLocations = payload.locations;
+        mapSnapshot = snapshot;
+        populateMapFilters();
+        renderSatelliteMap(firstLoad);
+      }
+      var missing = mapLocations.filter(function (item) { return !Number.isFinite(item.lat) || !Number.isFinite(item.lng); });
+      status.textContent = 'Synced ' + new Date(payload.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) +
+        ' · Checks every 30 seconds.' + (missing.length ? ' ' + missing.length + ' locations need Latitude / Longitude in Sheets before they can appear on the map: ' + missing.map(function (item) { return item.name; }).join(', ') : '');
+    } catch (error) {
+      status.textContent = 'Update failed. ' + error.message + (mapLocations.length ? ' Showing the last loaded data; retrying automatically.' : ' Retrying automatically.');
+    } finally {
+      mapRefreshBusy = false;
+      button.disabled = false;
+    }
   }
 
   function initSatelliteMap() {
     if (satelliteMap) {
       setTimeout(function () { satelliteMap.invalidateSize(); }, 0);
+      refreshMapData(false);
       return mapLoadingPromise;
     }
     if (typeof L === 'undefined') {
@@ -1711,23 +1850,18 @@ const HTML_PAGE = `<!DOCTYPE html>
     };
     legend.addTo(satelliteMap);
     wireMapEvents();
-    mapLoadingPromise = Promise.all(['/api/map-data', '/api/map-boundaries'].map(function (url) { return fetch(url)
-      .then(function (response) {
-        if (response.status === 401) { showLogin(); throw new Error('Session expired'); }
-        if (!response.ok) throw new Error('Map data request failed');
-        return response.json();
-      })
-      ; }))
-      .then(function (results) {
-        mapLocations = results[0];
-        mapBoundaries = results[1];
-        satelliteMap.attributionControl.addAttribution('<a href="https://github.com/faeldon/philippines-json-maps" target="_blank" rel="noopener">Boundaries: NAMRIA/PSA</a>');
-        populateMapFilters();
-        renderSatelliteMap(true);
-      })
-      .catch(function (error) {
-        document.getElementById('map-list-summary').textContent = 'Failed to load locations: ' + error.message;
-      });
+    mapLoadingPromise = fetch('/api/map-boundaries')
+      .then(function (response) { if (!response.ok) throw new Error('Boundary request failed'); return response.json(); })
+      .then(function (boundaries) { mapBoundaries = boundaries; })
+      .catch(function () { /* Store data can still refresh if boundaries are unavailable. */ })
+      .then(function () { return refreshMapData(true); });
+    satelliteMap.attributionControl.addAttribution('<a href="https://github.com/faeldon/philippines-json-maps" target="_blank" rel="noopener">Boundaries: NAMRIA/PSA</a>');
+    setInterval(function () {
+      if (currentUser && !document.hidden && document.getElementById('panel-map').classList.contains('active')) refreshMapData(false);
+    }, 30000);
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden && currentUser && document.getElementById('panel-map').classList.contains('active')) refreshMapData(false);
+    });
     setTimeout(function () { satelliteMap.invalidateSize(); }, 0);
     return mapLoadingPromise;
   }
