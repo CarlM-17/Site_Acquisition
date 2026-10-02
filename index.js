@@ -377,20 +377,55 @@ function parseMapSheet(rows, spec) {
   });
 }
 
+function parsePopulationSheet(rows) {
+  const key = value => mapKey(value).replace(/[^a-z0-9]/g, '');
+  const headerIndex = rows.findIndex(row => row.some(cell => ['barangay', 'barangayname', 'brgy'].includes(key(cell))));
+  if (headerIndex < 0) throw new Error('PopulationPerBarangay needs Barangay, Area or City, and Population columns.');
+  const headers = rows[headerIndex].map(key);
+  const column = names => headers.findIndex(header => names.includes(header));
+  const barangayCol = column(['barangay', 'barangayname', 'brgy']);
+  const areaCol = column(['area', 'district', 'maparea']);
+  const cityCol = column(['city', 'citymunicipality', 'municipality', 'cityormunicipality']);
+  const yearCol = column(['year', 'censusyear', 'populationyear']);
+  const populationCol = headers.findIndex(header => /^(total)?(population|pop)(20\d\d)?$/.test(header));
+  if (populationCol < 0 || (areaCol < 0 && cityCol < 0)) throw new Error('PopulationPerBarangay needs Area or City and POP or Population columns.');
+  const seen = new Set();
+  return rows.slice(headerIndex + 1).flatMap(row => {
+    const barangay = String(row[barangayCol] || '').trim();
+    if (!barangay || /\btotal\b/i.test(barangay)) return [];
+    const area = String(row[areaCol] || row[cityCol] || '').trim();
+    const raw = String(row[populationCol] == null ? '' : row[populationCol]).trim().replace(/[,\s]/g, '');
+    if (!area || !/^\d+$/.test(raw)) throw new Error('Missing or invalid area/population for ' + barangay + ' in PopulationPerBarangay.');
+    const population = Number(raw);
+    if (!Number.isSafeInteger(population)) throw new Error('Invalid population for ' + barangay);
+    const year = String(row[yearCol] || (headers[populationCol].match(/20\d\d/) || [''])[0]).trim();
+    const identity = [mapKey(area), mapKey(barangay), year].join('|');
+    if (seen.has(identity)) throw new Error('Duplicate barangay/year in PopulationPerBarangay: ' + barangay);
+    seen.add(identity);
+    return [{ area, barangay, population, year }];
+  });
+}
+
 let mapSheetRequest = null;
 app.get('/api/map-data', requireAuth, async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   try {
     if (!mapSheetRequest) {
-      mapSheetRequest = getSheetsClient().spreadsheets.values.batchGet({
+      const sheets = getSheetsClient();
+      const populationRequest = sheets.spreadsheets.values.get({
+        spreadsheetId: MAP_SHEET_ID, range: "'PopulationPerBarangay'!A:AZ",
+      }).then(result => ({ population: parsePopulationSheet(result.data.values || []), populationError: '' }))
+        .catch(error => ({ population: [], populationError: 'Population unavailable. Check PopulationPerBarangay access and columns. ' + (error.message && error.message.startsWith('PopulationPerBarangay') ? error.message : '') }));
+      mapSheetRequest = Promise.all([sheets.spreadsheets.values.batchGet({
         spreadsheetId: MAP_SHEET_ID,
         ranges: MAP_SHEETS.map(spec => "'" + spec.name + "'!A:AZ"),
       }).then(result => MAP_SHEETS.flatMap((spec, index) =>
-        parseMapSheet((result.data.valueRanges[index] || {}).values || [], spec)))
+        parseMapSheet((result.data.valueRanges[index] || {}).values || [], spec))), populationRequest])
+        .then(([locations, populationData]) => ({ locations, ...populationData }))
         .finally(() => { mapSheetRequest = null; });
     }
-    const locations = await mapSheetRequest;
-    res.json({ locations, updatedAt: new Date().toISOString() });
+    const mapData = await mapSheetRequest;
+    res.json({ ...mapData, updatedAt: new Date().toISOString() });
   } catch (error) {
     console.error('Map sheets:', error.message);
     res.status(503).json({ error: 'Could not read the map sheets. Check spreadsheet access and the Puregold, Competitors, and Proposed Site tab names.' });
@@ -944,7 +979,15 @@ const HTML_PAGE = `<!DOCTYPE html>
   .map-popup h3 { margin: 0 0 5px; font-size: 15px; color: var(--primary); }
   .map-popup p { margin: 4px 0; font-size: 12px; line-height: 1.4; }
   .map-popup .map-link { margin-top: 8px; }
-  .map-legend { background: rgba(255,255,255,.95); padding: 8px 10px; border-radius: 7px; box-shadow: 0 1px 5px rgba(0,0,0,.25); font-size: 12px; line-height: 1.8; }
+  .map-legend { background: rgba(255,255,255,.96); color: #172b3a; padding: 10px 12px; border-radius: 7px; box-shadow: 0 1px 5px rgba(0,0,0,.25); font-size: 12px; line-height: 1.4; width: 188px; max-height: 65vh; overflow-y: auto; }
+  .map-legend h3 { font-size: 16px; line-height: 1.15; margin: 0 0 6px; text-transform: uppercase; }
+  .map-legend .area-population { font-weight: 700; margin-bottom: 3px; }
+  .map-legend .area-source { font-size: 11px; color: #526170; margin-bottom: 8px; }
+  .map-legend .area-brand { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+  .map-legend .area-brand .brand-marker { flex: 0 0 22px; width: 22px; height: 22px; font-size: 9px; }
+  .map-legend .area-brand strong { font-size: 12px; }
+  .map-legend .area-count { font-size: 11px; color: #526170; }
+  .map-legend summary { cursor: pointer; font-weight: 700; margin-bottom: 7px; }
   .legend-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
 
   /* Form modal */
@@ -1065,7 +1108,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     #panel-map .map-tools { flex-basis: 142px; padding: 6px; gap: 6px; }
     #panel-map .map-tools input, #panel-map .map-tools select { font-size: 12px; }
     #panel-map .map-heading { flex-wrap: wrap; }
-    #panel-map .map-legend { font-size: 10px; padding: 5px; }
+    #panel-map .map-legend { font-size: 12px; padding: 8px; width: 154px; max-width: calc(100vw - 215px); }
   }
 </style>
 </head>
@@ -1448,6 +1491,9 @@ const HTML_PAGE = `<!DOCTYPE html>
   var editingRec = null;
   var currentUser = null;
   var mapLocations = [];
+  var mapPopulation = [];
+  var mapPopulationError = '';
+  var mapAreaSummary = null;
   var satelliteMap = null;
   var mapClusters = null;
   var mapMarkersById = {};
@@ -1497,6 +1543,11 @@ const HTML_PAGE = `<!DOCTYPE html>
     mapLabelLines.clearLayers();
     var occupied = separateMapPins();
     var size = satelliteMap.getSize();
+    if (mapAreaSummary) {
+      var card = mapAreaSummary.getBoundingClientRect();
+      var canvas = satelliteMap.getContainer().getBoundingClientRect();
+      occupied.push({ x: card.left - canvas.left - 5, y: card.top - canvas.top - 5, w: card.width + 10, h: card.height + 10 });
+    }
     Object.keys(mapMarkersById).forEach(function (id) {
       var marker = mapMarkersById[id];
       var tip = marker.getTooltip();
@@ -1664,6 +1715,43 @@ const HTML_PAGE = `<!DOCTYPE html>
     return 'puregold';
   }
 
+  function populationAreaKey(value) {
+    return String(value || '').toLowerCase().replace(/city of /g, '').replace(/ city/g, '').trim();
+  }
+
+  function renderMapAreaSummary() {
+    if (!mapAreaSummary) return;
+    var area = document.getElementById('map-area').value;
+    var areaKey = populationAreaKey(area);
+    var belongs = function (value) {
+      var key = populationAreaKey(value);
+      return !area || key === areaKey || (area === 'Malabon & Navotas' && (key === 'malabon' || key === 'navotas'));
+    };
+    var rows = mapPopulation.filter(function (row) { return belongs(row.area); });
+    var years = Array.from(new Set(rows.map(function (row) { return row.year || 'Unspecified'; })));
+    var populationText = 'Population: not available';
+    var sourceText = mapPopulationError || 'No matching barangay data. Use the selected map area in the sheet’s Area column.';
+    if (rows.length && years.length === 1) {
+      populationText = 'Population: ' + rows.reduce(function (sum, row) { return sum + row.population; }, 0).toLocaleString();
+      sourceText = rows.length + ' listed barangays · ' + (years[0] === 'Unspecified' ? 'Year not specified' : 'Year ' + years[0]);
+    } else if (rows.length) {
+      populationText = 'Population: mixed years';
+      sourceText = 'Use one census year for this area to show a combined population.';
+    }
+    var counts = {};
+    mapLocations.filter(function (location) { return belongs(location.area); }).forEach(function (location) {
+      var brand = mapBrand(location); counts[brand] = (counts[brand] || 0) + 1;
+    });
+    var wasOpen = mapAreaSummary.querySelector('details');
+    var expanded = wasOpen ? wasOpen.open : window.innerWidth > 600;
+    mapAreaSummary.innerHTML = '<details' + (expanded ? ' open' : '') + '><summary>Area overview</summary><h3>' + escapeHtml(area || 'CaMaNaVa') + '</h3>' +
+      '<div class="area-population">' + escapeHtml(populationText) + '</div><div class="area-source">' + escapeHtml(sourceText) + '</div>' +
+      [['puregold','PG','Puregold'],['minimart','M','Minimart by Puregold'],['puremart','PM','Puremart'],['dali','','DALI'],['osave','',"O!Save"],['potential','★','Potential barangays']].map(function (item) {
+        var count = counts[item[0]] || 0;
+        return '<div class="area-brand"><span class="brand-marker brand-' + item[0] + '">' + item[1] + '</span><div><strong>' + item[2] + '</strong><div class="area-count">' + count + (item[0] === 'potential' ? ' sites' : (count === 1 ? ' branch' : ' branches')) + '</div></div></div>';
+      }).join('') + '<div class="area-source">Area totals · all categories</div></details>';
+  }
+
   function mapLocationLabel(location) {
     if (location.label) return location.label;
     if (location.category !== 'proposed') return location.name;
@@ -1771,6 +1859,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     document.getElementById('map-count-competitor').textContent = counts.competitor;
     document.getElementById('map-count-proposed').textContent = counts.proposed;
     document.getElementById('map-list-summary').textContent = locations.length + ' of ' + mapLocations.length + ' results · ' + mapClusters.getLayers().length + ' mapped';
+    renderMapAreaSummary();
     mapBoundaryLayer.clearLayers();
     var selectedBoundary = mapBoundaries[document.getElementById('map-area').value];
     if (selectedBoundary) {
@@ -1833,9 +1922,11 @@ const HTML_PAGE = `<!DOCTYPE html>
       var payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Google Sheets is unavailable.');
       if (!currentUser) return;
-      var snapshot = JSON.stringify(payload.locations);
+      var snapshot = JSON.stringify([payload.locations, payload.population, payload.populationError]);
       if (snapshot !== mapSnapshot || firstLoad) {
         mapLocations = payload.locations;
+        mapPopulation = payload.population || [];
+        mapPopulationError = payload.populationError || '';
         mapSnapshot = snapshot;
         populateMapFilters();
         renderSatelliteMap(firstLoad);
@@ -1861,7 +1952,8 @@ const HTML_PAGE = `<!DOCTYPE html>
       document.getElementById('map-list-summary').textContent = 'Map library could not load. Check the internet connection and refresh.';
       return Promise.resolve();
     }
-    satelliteMap = L.map('satellite-map', { zoomControl: true, preferCanvas: true }).setView([14.706, 120.995], 12);
+    satelliteMap = L.map('satellite-map', { zoomControl: false, preferCanvas: true }).setView([14.706, 120.995], 12);
+    L.control.zoom({ position: 'topright' }).addTo(satelliteMap);
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
       maxZoom: 19,
       attribution: 'Imagery &copy; Esri and contributors',
@@ -1876,12 +1968,15 @@ const HTML_PAGE = `<!DOCTYPE html>
     mapLabelLines = L.layerGroup().addTo(satelliteMap);
     satelliteMap.on('moveend zoomend resize', function () { requestAnimationFrame(arrangeMapLabels); });
     satelliteMap.addLayer(mapClusters);
-    var legend = L.control({ position: 'bottomright' });
+    var legend = L.control({ position: 'topleft' });
     legend.onAdd = function () {
       var div = L.DomUtil.create('div', 'map-legend');
-      div.innerHTML = [['#16a34a','Puregold'],['#facc15','Minimart'],['#fb923c','Puremart'],['#a600ff','DALI'],['#ff1515',"O!Save"],['#38bdf8','Potential barangay']].map(function (item) {
-        return '<div><span class="legend-swatch" style="background:' + item[0] + '"></span>' + item[1] + '</div>';
-      }).join('');
+      mapAreaSummary = div;
+      div.setAttribute('aria-label', 'Area population and store counts');
+      div.addEventListener('toggle', function () { requestAnimationFrame(arrangeMapLabels); }, true);
+      L.DomEvent.disableClickPropagation(div);
+      L.DomEvent.disableScrollPropagation(div);
+      div.innerHTML = 'Loading area details…';
       return div;
     };
     legend.addTo(satelliteMap);
