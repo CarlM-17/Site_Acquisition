@@ -359,7 +359,8 @@ function parseMapSheet(rows, spec) {
       address: get('Complete Address', 'Target Address / Search Area', 'Address'),
       mapUrl: get('Google Maps Link', 'Google Map Link'),
       note: get('Why it deserves investigation', 'Remarks'), priority: get('Priority'),
-      label: get('Barangay', 'Map Label'), lat: null, lng: null,
+      label: get('Map Label') || (spec.category === 'proposed' ? get('Barangay', 'Brgy') : ''),
+      barangay: get('Barangay', 'Brgy', 'Barangay Name'), lat: null, lng: null,
     };
     const lat = get('Latitude', 'Lat'), lng = get('Longitude', 'Lng', 'Lon');
     const valid = (a, b) => Number.isFinite(a) && Number.isFinite(b) && Math.abs(a) <= 90 && Math.abs(b) <= 180;
@@ -1082,6 +1083,7 @@ const HTML_PAGE = `<!DOCTYPE html>
   .brand-potential { background: #38bdf8; color: #09243b; }
   .leaflet-tooltip.store-map-label { background: transparent; border: 0; box-shadow: none; color: #fff; font: 700 12px/1.15 Arial,sans-serif; white-space: normal; width: max-content; max-width: 145px; text-shadow: -1px -1px 2px #000,1px -1px 2px #000,-1px 1px 2px #000,1px 1px 2px #000,0 0 4px #000; padding: 0; }
   .leaflet-tooltip.store-map-label:before { display: none; }
+  .store-map-label .label-population { display: block; font-size: 11px; line-height: 1.25; font-weight: 600; margin-top: 2px; }
   .leaflet-container .map-popup a.map-link { color: #fff; }
   @media (max-width: 760px) {
     #panel-map .map-heading p { display: none; }
@@ -1778,6 +1780,33 @@ const HTML_PAGE = `<!DOCTYPE html>
     return labels[location.name] || location.name;
   }
 
+  function mapLocationPopulation(location) {
+    function barangayKey(value) {
+      return String(value || '').toLowerCase().replace(/^(barangay|brgy)[. ]*/, '').replace(/[^a-z0-9ñ]+/g, ' ').trim().replace(/ +/g, ' ');
+    }
+    var names = location.barangay ? [location.barangay] : [];
+    if (!names.length && location.category === 'proposed') names = [mapLocationLabel(location)];
+    if (!names.length) {
+      names = String(location.address || '').split(',').map(function (part) { return part.trim(); }).filter(function (part) {
+        return /^(barangay|brgy)[. ]/i.test(part);
+      });
+    }
+    var keys = names.map(barangayKey).filter(Boolean);
+    var area = populationAreaKey(location.area);
+    var matches = mapPopulation.filter(function (row) {
+      return populationAreaKey(row.area) === area && keys.indexOf(barangayKey(row.barangay)) !== -1;
+    });
+    // Never select an arbitrary barangay or add together different census years.
+    if (matches.length !== 1) return null;
+    return matches[0].population;
+  }
+
+  function mapLocationLabelHtml(location) {
+    var population = mapLocationPopulation(location);
+    return escapeHtml(mapLocationLabel(location)) + '<span class="label-population">Pop. ' +
+      (population === null ? 'not available' : population.toLocaleString('en-US')) + '</span>';
+  }
+
   function mapMarkerIcon(location) {
     var brand = mapBrand(location);
     var symbol = { puregold: 'PG', minimart: 'M', puremart: 'PM', dali: '', osave: '', potential: '★' }[brand];
@@ -1854,7 +1883,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       var marker = L.marker([location.lat, location.lng], { icon: mapMarkerIcon(location), title: location.name });
       marker.mapOriginalLatLng = L.latLng(location.lat, location.lng);
       marker.bindPopup(mapPopupHtml(location), { maxWidth: 340 });
-      if (mapLabelsVisible) marker.bindTooltip(escapeHtml(mapLocationLabel(location)), {
+      if (mapLabelsVisible) marker.bindTooltip(mapLocationLabelHtml(location), {
         permanent: true, direction: 'right', offset: [14, 0],
         className: 'store-map-label'
       });
