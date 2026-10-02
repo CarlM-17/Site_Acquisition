@@ -1263,6 +1263,7 @@ const HTML_PAGE = `<!DOCTYPE html>
           <select id="map-area" aria-label="Area"><option value="">All areas</option></select>
           <select id="map-type" aria-label="Store or site type"><option value="">All formats</option></select>
           <button type="button" class="btn btn-secondary" id="map-fit">Fit Results</button>
+          <button type="button" class="btn btn-secondary" id="map-labels" aria-pressed="true" aria-controls="satellite-map" title="Show or hide store/site labels and guide lines. Pins remain clickable.">Hide Labels</button>
           <button type="button" class="btn btn-secondary" id="map-fullscreen">Full Screen</button>
           <button type="button" class="btn btn-secondary" id="map-refresh">Refresh now</button>
           <div id="map-sync-status" role="status" aria-live="polite">Connecting to Google Sheets…</div>
@@ -1504,6 +1505,8 @@ const HTML_PAGE = `<!DOCTYPE html>
   var mapBoundaries = {};
   var mapBoundaryLayer = null;
   var mapLabelLines = null;
+  var mapLabelsVisible = true;
+  try { mapLabelsVisible = localStorage.getItem('camanava-map-labels') !== 'hidden'; } catch (error) { /* Storage may be unavailable. */ }
 
   // Display offsets only: source coordinates and Google Maps links never change.
   function separateMapPins() {
@@ -1531,8 +1534,10 @@ const HTML_PAGE = `<!DOCTYPE html>
       if (chosen.distanceTo(point) > 1) {
         var displayed = satelliteMap.containerPointToLatLng(chosen);
         marker.setLatLng(displayed);
-        L.polyline([origin, displayed], { color: '#172b3a', weight: 4, opacity: 0.85, interactive: false }).addTo(mapLabelLines);
-        L.polyline([origin, displayed], { color: '#fff', weight: 2, opacity: 0.95, interactive: false }).addTo(mapLabelLines);
+        if (mapLabelsVisible) {
+          L.polyline([origin, displayed], { color: '#172b3a', weight: 4, opacity: 0.85, interactive: false }).addTo(mapLabelLines);
+          L.polyline([origin, displayed], { color: '#fff', weight: 2, opacity: 0.95, interactive: false }).addTo(mapLabelLines);
+        }
       }
     });
     return placed.map(function (point) { return { x: point.x - 16, y: point.y - 16, w: 32, h: 32 }; });
@@ -1542,6 +1547,7 @@ const HTML_PAGE = `<!DOCTYPE html>
     if (!satelliteMap || !mapLabelLines) return;
     mapLabelLines.clearLayers();
     var occupied = separateMapPins();
+    if (!mapLabelsVisible) return;
     var size = satelliteMap.getSize();
     if (mapAreaSummary) {
       var card = mapAreaSummary.getBoundingClientRect();
@@ -1836,6 +1842,9 @@ const HTML_PAGE = `<!DOCTYPE html>
 
   function renderSatelliteMap(shouldFit) {
     if (!satelliteMap || !mapClusters) return;
+    var labelsButton = document.getElementById('map-labels');
+    labelsButton.textContent = mapLabelsVisible ? 'Hide Labels' : 'Show Labels';
+    labelsButton.setAttribute('aria-pressed', String(mapLabelsVisible));
     var locations = filteredMapLocations();
     Object.keys(mapMarkersById).forEach(function (id) { mapMarkersById[id].unbindTooltip(); });
     mapClusters.clearLayers();
@@ -1845,7 +1854,7 @@ const HTML_PAGE = `<!DOCTYPE html>
       var marker = L.marker([location.lat, location.lng], { icon: mapMarkerIcon(location), title: location.name });
       marker.mapOriginalLatLng = L.latLng(location.lat, location.lng);
       marker.bindPopup(mapPopupHtml(location), { maxWidth: 340 });
-      marker.bindTooltip(escapeHtml(mapLocationLabel(location)), {
+      if (mapLabelsVisible) marker.bindTooltip(escapeHtml(mapLocationLabel(location)), {
         permanent: true, direction: 'right', offset: [14, 0],
         className: 'store-map-label'
       });
@@ -1883,6 +1892,11 @@ const HTML_PAGE = `<!DOCTYPE html>
       document.getElementById(id).addEventListener(eventName, function () { renderSatelliteMap(id === 'map-area'); });
     });
     document.getElementById('map-fit').addEventListener('click', fitMapResults);
+    document.getElementById('map-labels').addEventListener('click', function () {
+      mapLabelsVisible = !mapLabelsVisible;
+      try { localStorage.setItem('camanava-map-labels', mapLabelsVisible ? 'shown' : 'hidden'); } catch (error) { /* Keep the session preference. */ }
+      renderSatelliteMap(false);
+    });
     document.getElementById('map-refresh').addEventListener('click', function () { refreshMapData(false); });
     document.getElementById('map-fullscreen').addEventListener('click', function () {
       var panel = document.getElementById('panel-map');
