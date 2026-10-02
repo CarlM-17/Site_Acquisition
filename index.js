@@ -1459,10 +1459,43 @@ const HTML_PAGE = `<!DOCTYPE html>
   var mapBoundaryLayer = null;
   var mapLabelLines = null;
 
+  // Display offsets only: source coordinates and Google Maps links never change.
+  function separateMapPins() {
+    var placed = [];
+    var size = satelliteMap.getSize();
+    Object.keys(mapMarkersById).sort().forEach(function (id) {
+      var marker = mapMarkersById[id];
+      var origin = marker.mapOriginalLatLng;
+      var point = satelliteMap.latLngToContainerPoint(origin);
+      marker.setLatLng(origin);
+      if (point.x < -40 || point.y < -40 || point.x > size.x + 40 || point.y > size.y + 40) return;
+      var chosen = point;
+      function overlaps(candidate) {
+        return placed.some(function (other) { return candidate.distanceTo(other) < 36; });
+      }
+      for (var radius = 40; overlaps(chosen); radius += 40) {
+        var steps = Math.ceil(2 * Math.PI * radius / 40);
+        for (var step = 0; step < steps; step++) {
+          var angle = -Math.PI / 2 + step * 2 * Math.PI / steps;
+          var candidate = L.point(point.x + Math.cos(angle) * radius, point.y + Math.sin(angle) * radius);
+          if (!overlaps(candidate)) { chosen = candidate; break; }
+        }
+      }
+      placed.push(chosen);
+      if (chosen.distanceTo(point) > 1) {
+        var displayed = satelliteMap.containerPointToLatLng(chosen);
+        marker.setLatLng(displayed);
+        L.polyline([origin, displayed], { color: '#172b3a', weight: 4, opacity: 0.85, interactive: false }).addTo(mapLabelLines);
+        L.polyline([origin, displayed], { color: '#fff', weight: 2, opacity: 0.95, interactive: false }).addTo(mapLabelLines);
+      }
+    });
+    return placed.map(function (point) { return { x: point.x - 16, y: point.y - 16, w: 32, h: 32 }; });
+  }
+
   function arrangeMapLabels() {
     if (!satelliteMap || !mapLabelLines) return;
     mapLabelLines.clearLayers();
-    var occupied = [];
+    var occupied = separateMapPins();
     var size = satelliteMap.getSize();
     Object.keys(mapMarkersById).forEach(function (id) {
       var marker = mapMarkersById[id];
@@ -1709,17 +1742,20 @@ const HTML_PAGE = `<!DOCTYPE html>
       return;
     }
     if (!satelliteMap || !mapClusters || !mapClusters.getLayers().length) return;
-    satelliteMap.fitBounds(mapClusters.getBounds(), { padding: [28, 28], maxZoom: 16 });
+    var originals = Object.keys(mapMarkersById).map(function (id) { return mapMarkersById[id].mapOriginalLatLng; });
+    satelliteMap.fitBounds(L.latLngBounds(originals), { padding: [60, 60], maxZoom: 16 });
   }
 
   function renderSatelliteMap(shouldFit) {
     if (!satelliteMap || !mapClusters) return;
     var locations = filteredMapLocations();
+    Object.keys(mapMarkersById).forEach(function (id) { mapMarkersById[id].unbindTooltip(); });
     mapClusters.clearLayers();
     mapMarkersById = {};
     locations.forEach(function (location) {
       if (!Number.isFinite(location.lat) || !Number.isFinite(location.lng)) return;
       var marker = L.marker([location.lat, location.lng], { icon: mapMarkerIcon(location), title: location.name });
+      marker.mapOriginalLatLng = L.latLng(location.lat, location.lng);
       marker.bindPopup(mapPopupHtml(location), { maxWidth: 340 });
       marker.bindTooltip(escapeHtml(mapLocationLabel(location)), {
         permanent: true, direction: 'right', offset: [14, 0],
